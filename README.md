@@ -175,6 +175,21 @@ issues one request per group per interval and decodes all signals from that bloc
   the actual sample rate is limited by baud rate, device response time and USB latency.
 - Scope history is an in-memory ring buffer (3000 samples per series) and is not exported.
 
+## License
+
+Copyright (C) 2026 Hans Baier.
+
+This program is free software: you can redistribute it and/or modify it under the terms of the
+GNU General Public License as published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the
+implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See `LICENSE` for the
+full text.
+
+Third-party components keep their own licenses, notably the MIT-licensed
+[usb-serial-for-android](https://github.com/mik3y/usb-serial-for-android) driver library.
+
 ## Credits
 
 - Configuration model and semantics inspired by

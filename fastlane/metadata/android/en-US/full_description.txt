@@ -1,0 +1,28 @@
+ModPoll RTU is a Modbus RTU and ASCII master for Android. It talks to industrial
+devices through a USB serial adapter and gives field engineers a compact
+workspace for commissioning and troubleshooting.
+
+Features:
+
+* USB serial support for CH340/CH341, CP210x, FTDI, PL2303 and CDC-ACM adapters
+* Modbus RTU (CRC16) and Modbus ASCII (LRC) framing
+* Coils, discrete inputs, holding registers and input registers
+* Read and write support for the common Modbus function codes
+* Data types: bool, bool8, bool16, uint16, int16, uint32, int32, uint64, int64,
+  float16, float32, float64 and stringN
+* Byte and word endianness, scaling, offsets, units and decimal places
+* Device profiles with grouped read blocks and individual poll intervals
+* Import and export of modpoll-compatible CSV files
+* Live values with raw hex, sparklines, search and filters
+* Writable signal detail view with decoded interpretations
+* Realtime scope for holding registers with 10-1000 ms sampling, rolling windows
+  and shared or per-series scaling
+* Long-term trend history
+* Slave-id scan, 32-register heatmap and raw PDU tool
+* Byte-level traffic log with timing and exception decoding
+* Built-in Modbus simulator for testing without hardware
+
+USB host support or a USB-OTG adapter is required for a physical device. The app
+has no network permission and does not collect telemetry.
+
+ModPoll RTU is free software under the GNU General Public License v3.0 or later.
