@@ -1,10 +1,10 @@
 # Keep kotlinx.serialization generated serializers.
 -keepattributes *Annotation*, InnerClasses
 -dontnote kotlinx.serialization.**
--keepclassmembers class com.modpoll.rtu.** {
+-keepclassmembers class io.github.hansfbaier.modpoll.** {
     *** Companion;
 }
--keepclasseswithmembers class com.modpoll.rtu.** {
+-keepclasseswithmembers class io.github.hansfbaier.modpoll.** {
     kotlinx.serialization.KSerializer serializer(...);
 }
--keep,includedescriptorclasses class com.modpoll.rtu.**$$serializer { *; }
+-keep,includedescriptorclasses class io.github.hansfbaier.modpoll.**$$serializer { *; }

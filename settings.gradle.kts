@@ -15,5 +15,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "ModPollRTU"
+rootProject.name = "ModPollMobile"
 include(":app")

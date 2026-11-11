@@ -1,4 +1,4 @@
-# ModPoll RTU
+# ModPoll Mobile
 
 A Modbus **RTU / ASCII** master for Android, driven over USB serial. It follows the configuration
 model of [top-maker/modpoll](https://github.com/top-maker/modpoll) (device / poll / ref CSV) but
@@ -197,4 +197,4 @@ Third-party components keep their own licenses, notably the MIT-licensed
 - USB serial drivers by [mik3y/usb-serial-for-android](https://github.com/mik3y/usb-serial-for-android)
   (MIT).
 
-ModPoll RTU is an independent project and is not affiliated with top-maker/modpoll.
+ModPoll Mobile is an independent project and is not affiliated with top-maker/modpoll.
