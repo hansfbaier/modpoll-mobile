@@ -52,6 +52,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -641,6 +642,7 @@ private fun GroupEditorDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                error?.let { ErrorText(it) }
                 Text(
                     "Object type",
                     style = MaterialTheme.typography.labelSmall,
@@ -691,7 +693,6 @@ private fun GroupEditorDialog(
                     Text("Enabled", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
                     Switch(checked = enabled, onCheckedChange = { enabled = it })
                 }
-                error?.let { ErrorText(it) }
             }
         },
         confirmButton = {
@@ -734,7 +735,9 @@ private fun SignalEditorDialog(
         } else {
             DataType.entries.filterNot { it == DataType.BOOL8 || it == DataType.BOOL16 }
         }
-    var name by remember { mutableStateOf(signal?.name ?: "") }
+    var name by remember {
+        mutableStateOf(signal?.name ?: "${group.objectType.shortLabel} ${signal?.address ?: group.start}")
+    }
     var dataType by remember { mutableStateOf(signal?.dataType ?: if (group.objectType.isBitTable) DataType.BOOL8 else DataType.UINT16) }
     var address by remember { mutableStateOf((signal?.address ?: group.start).toString()) }
     var bit by remember { mutableStateOf(signal?.bit?.toString() ?: "0") }
@@ -750,6 +753,11 @@ private fun SignalEditorDialog(
     var typeExpanded by remember { mutableStateOf(false) }
     var endianExpanded by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    val scroll = rememberScrollState()
+
+    LaunchedEffect(error) {
+        if (error != null) scroll.animateScrollTo(0)
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -758,10 +766,11 @@ private fun SignalEditorDialog(
             Column(
                 Modifier
                     .height(440.dp)
-                    .verticalScroll(rememberScrollState()),
+                    .verticalScroll(scroll),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 MonoText("Group: ${group.name} · ${group.objectType.label}", size = 10, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                error?.let { ErrorText(it) }
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
@@ -882,7 +891,6 @@ private fun SignalEditorDialog(
                     Text("Favorite", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
                     Switch(checked = favorite, onCheckedChange = { favorite = it })
                 }
-                error?.let { ErrorText(it) }
             }
         },
         confirmButton = {

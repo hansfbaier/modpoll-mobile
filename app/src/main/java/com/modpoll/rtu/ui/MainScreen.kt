@@ -209,7 +209,7 @@ fun ModPollRoot(vm: AppViewModel) {
     if (showAbout) {
         AlertDialog(
             onDismissRequest = { showAbout = false },
-            title = { Text("ModPoll RTU 1.2") },
+            title = { Text("ModPoll RTU 1.2.1") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
