@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.modpoll.rtu.AppContainer
 import com.modpoll.rtu.ModPollApp
+import com.modpoll.rtu.data.BuiltInProfiles
 import com.modpoll.rtu.data.CsvImportResult
 import com.modpoll.rtu.data.DataType
 import com.modpoll.rtu.data.DeviceProfile
@@ -24,7 +25,7 @@ import com.modpoll.rtu.modbus.ExchangeKind
 import com.modpoll.rtu.modbus.FrameExchange
 import com.modpoll.rtu.modbus.ModbusException
 import com.modpoll.rtu.modbus.ModbusMaster
-import com.modpoll.rtu.modbus.ModbusResponse
+import com.modpoll.rtu.modbus.RawResponseDecoder
 import com.modpoll.rtu.modbus.SerialTransport
 import com.modpoll.rtu.modbus.SimulatedTransport
 import com.modpoll.rtu.modbus.toHex
@@ -176,7 +177,25 @@ class AppViewModel(
         _activeProfileId.value = profileId
         _activeProfile.value = profile
         persist()
-        engine?.updateProfile(profile)
+        if (_link.value.connected) {
+            startEngine(profile)
+        } else {
+            _poll.value = PollSnapshot()
+            _link.value = _link.value.copy(polling = false)
+        }
+    }
+
+    /** Clear the active profile. Nothing is polled until a profile is activated again. */
+    fun deactivateProfile() {
+        _activeProfileId.value = ""
+        _activeProfile.value = null
+        persist()
+        pollCollector?.cancel()
+        pollCollector = null
+        engine?.shutdown()
+        engine = null
+        _poll.value = PollSnapshot()
+        _link.value = _link.value.copy(polling = false)
     }
 
     fun createProfile(name: String = "New device"): DeviceProfile {
@@ -190,6 +209,7 @@ class AppViewModel(
         _activeProfileId.value = profile.id
         _activeProfile.value = profile
         persist()
+        if (_link.value.connected) startEngine(profile)
         return profile
     }
 
@@ -212,6 +232,7 @@ class AppViewModel(
         _activeProfileId.value = copy.id
         _activeProfile.value = copy
         persist()
+        if (_link.value.connected) startEngine(copy)
     }
 
     fun deleteProfile(profileId: String) {
@@ -224,12 +245,10 @@ class AppViewModel(
         if (remaining.isEmpty()) return
         _profiles.value = remaining
         if (_activeProfileId.value == profileId) {
-            val next = remaining.first()
-            _activeProfileId.value = next.id
-            _activeProfile.value = next
-            engine?.updateProfile(next)
+            deactivateProfile()
+        } else {
+            persist()
         }
-        persist()
     }
 
     fun upsertProfile(profile: DeviceProfile) {
@@ -318,44 +337,77 @@ class AppViewModel(
         upsertProfile(profile.copy(unitId = unitId.coerceIn(1, 247)))
     }
 
-    /** Add a scanned address to the active profile, creating or extending a group as needed. */
-    fun quickAddSignal(
+    /**
+     * Add a scanned address to the active profile, creating or extending a group as needed.
+     * Returns true when the signal was saved.
+     */
+    fun addSignalToActiveProfile(
         objectType: ObjectType,
         address: Int,
         dataType: DataType,
-    ) {
-        val profile = _activeProfile.value ?: createProfile("Scanned device")
+        name: String,
+        writable: Boolean,
+    ): Boolean {
+        val profile =
+            _activeProfile.value ?: run {
+                _report.value =
+                    ImportReport(
+                        "No active profile",
+                        listOf("Activate a profile first (Profiles → Activate), then add the signal again."),
+                    )
+                return false
+            }
         val span =
             if (objectType.isBitTable) {
                 dataType.bitWidth.coerceAtLeast(1)
             } else {
                 (if (dataType == DataType.STRING) 1 else dataType.registerSpan).coerceAtLeast(1)
             }
+        if (address < 0 || address + span > 65536) {
+            _report.value = ImportReport("Address out of range", listOf("Address $address + $span exceeds 65535."))
+            return false
+        }
+
+        val existing = profile.groups.firstOrNull { it.objectType == objectType && address in it.start..it.endAddress }
+        val canExtend =
+            existing != null &&
+                address + span - existing.start <= objectType.maximumReadQuantity
         val group =
-            profile.groups.firstOrNull { it.objectType == objectType && address >= it.start && address <= it.endAddress }
-                ?: SignalGroup(
+            if (existing != null && canExtend) {
+                if (address + span - 1 > existing.endAddress) {
+                    existing.copy(count = address + span - existing.start)
+                } else {
+                    existing
+                }
+            } else {
+                val start = if (objectType.isBitTable) address else (address / 16) * 16
+                val desired = maxOf(16, address + span - start)
+                SignalGroup(
                     id = UUID.randomUUID().toString(),
-                    name = "${objectType.label} $address",
+                    name = "${objectType.label} $start",
                     objectType = objectType,
-                    start = if (objectType.isBitTable) address else (address / 16) * 16,
-                    count = maxOf(16, address - (if (objectType.isBitTable) address else (address / 16) * 16) + span),
+                    start = start,
+                    count = desired.coerceAtMost(objectType.maximumReadQuantity).coerceAtMost(65536 - start),
                     intervalMs = 1000,
                 )
-        val expanded =
-            if (address + span - 1 > group.endAddress) {
-                group.copy(count = address + span - group.start)
-            } else {
-                group
             }
+
+        val baseName = name.trim().ifBlank { "${objectType.shortLabel} $address" }
+        var uniqueName = baseName
+        var suffix = 2
+        while (group.signals.any { it.name == uniqueName }) {
+            uniqueName = "$baseName $suffix"
+            suffix++
+        }
         val signal =
             Signal(
                 id = UUID.randomUUID().toString(),
-                name = "${objectType.shortLabel} $address",
+                name = uniqueName,
                 address = address,
                 dataType = dataType,
-                writable = objectType == ObjectType.COIL || objectType == ObjectType.HOLDING_REGISTER,
+                writable = writable && (objectType == ObjectType.COIL || objectType == ObjectType.HOLDING_REGISTER),
             )
-        val updatedGroup = expanded.copy(signals = expanded.signals + signal)
+        val updatedGroup = group.copy(signals = group.signals + signal)
         val groups =
             if (profile.groups.any { it.id == group.id }) {
                 profile.groups.map { if (it.id == group.id) updatedGroup else it }
@@ -363,7 +415,16 @@ class AppViewModel(
                 profile.groups + updatedGroup
             }
         upsertProfile(profile.copy(groups = groups))
-        _report.value = ImportReport("Added ${signal.name} to ${updatedGroup.name}")
+        _report.value =
+            ImportReport(
+                "Added '$uniqueName' to ${profile.name}",
+                listOf(
+                    "Group: ${updatedGroup.name} (${updatedGroup.objectType.shortLabel} ${updatedGroup.start}..${updatedGroup.endAddress})",
+                    "Type: ${dataType.label} at address $address",
+                    "The signal is saved in the profile and will appear as a card on Live.",
+                ),
+            )
+        return true
     }
 
     // ------------------------------------------------------------------ link
@@ -436,6 +497,14 @@ class AppViewModel(
 
     fun connectDemo() {
         if (_link.value.connected || _link.value.connecting) disconnect()
+        if (_activeProfile.value == null || _activeProfile.value?.signalCount == 0) {
+            val demo = _profiles.value.firstOrNull { it.id == BuiltInProfiles.DEMO_ID }
+            if (demo != null) {
+                _activeProfileId.value = demo.id
+                _activeProfile.value = demo
+                persist()
+            }
+        }
         val newTransport =
             SimulatedTransport(
                 framer = _linkSettings.value.framer,
@@ -452,7 +521,7 @@ class AppViewModel(
     ) {
         val profile = _activeProfile.value
         if (profile == null) {
-            _link.value = _link.value.copy(connecting = false, lastError = "Create or select a device profile first")
+            _link.value = _link.value.copy(connecting = false, lastError = "Activate a profile first (Profiles → Activate)")
             runCatching { newTransport.close() }
             return
         }
@@ -474,20 +543,6 @@ class AppViewModel(
                 recorder = trafficRecorder,
             )
         this.master = master
-        val engine =
-            PollEngine(
-                master = master,
-                initialProfile = profile,
-                autoDisableAfterFailures = _linkSettings.value.autoDisableAfterFailures,
-                onTransportFailure = { failure -> viewModelScope.launch { onTransportLost(failure) } },
-            )
-        this.engine = engine
-        pollCollector?.cancel()
-        pollCollector =
-            viewModelScope.launch {
-                engine.state.collect { snapshot -> _poll.value = snapshot }
-            }
-        engine.start()
         _link.value =
             _link.value.copy(
                 kind = kind,
@@ -497,6 +552,7 @@ class AppViewModel(
                 label = label,
                 lastError = null,
             )
+        startEngine(profile)
         val key = if (kind == TransportKind.USB) _link.value.selectedDeviceKey else _linkSettings.value.lastDeviceKey
         updateLinkSettings(_linkSettings.value.copy(lastDeviceKey = key))
     }
@@ -543,10 +599,35 @@ class AppViewModel(
         }
     }
 
+    private fun startEngine(profile: DeviceProfile) {
+        val activeMaster = master ?: return
+        pollCollector?.cancel()
+        engine?.shutdown()
+        val newEngine =
+            PollEngine(
+                master = activeMaster,
+                initialProfile = profile,
+                autoDisableAfterFailures = _linkSettings.value.autoDisableAfterFailures,
+                onTransportFailure = { failure -> viewModelScope.launch { onTransportLost(failure) } },
+            )
+        engine = newEngine
+        pollCollector =
+            viewModelScope.launch {
+                newEngine.state.collect { snapshot -> _poll.value = snapshot }
+            }
+        newEngine.start()
+        _link.value = _link.value.copy(polling = true)
+    }
+
     fun togglePolling() {
         val engine =
             engine ?: run {
-                _link.value = _link.value.copy(lastError = "Not connected")
+                val profile = _activeProfile.value
+                if (master != null && profile != null) {
+                    startEngine(profile)
+                    return
+                }
+                _link.value = _link.value.copy(lastError = "No active profile")
                 return
             }
         if (_link.value.polling) {
@@ -784,7 +865,7 @@ class AppViewModel(
                         responseHex = result.responseRaw.toHex(),
                         durationMs = result.durationMs,
                         attempts = result.attempts,
-                        decoded = describeResponse(result.response),
+                        decoded = RawResponseDecoder.decode(result.response, pdu),
                     )
             } catch (failure: Exception) {
                 _raw.value =
@@ -794,32 +875,6 @@ class AppViewModel(
                         responseHex = "",
                         error = failure.message ?: "Request failed",
                     )
-            }
-        }
-    }
-
-    private fun describeResponse(response: ModbusResponse): String {
-        val function = response.function
-        val payload = response.payload
-        return when (function) {
-            1, 2 -> {
-                val byteCount = payload.firstOrNull()?.toInt()?.and(0xFF) ?: 0
-                val bits = response.bits(byteCount * 8)
-                "byteCount=$byteCount  bits=${bits.joinToString("") { if (it) "1" else "0" }}"
-            }
-
-            3, 4 -> {
-                val byteCount = payload.firstOrNull()?.toInt()?.and(0xFF) ?: 0
-                val regs = response.registers(byteCount / 2)
-                "byteCount=$byteCount  regs=${regs.joinToString(" ") { "%04X".format(it) }}"
-            }
-
-            5, 6, 15, 16 -> {
-                "echo=${payload.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }}"
-            }
-
-            else -> {
-                payload.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
             }
         }
     }

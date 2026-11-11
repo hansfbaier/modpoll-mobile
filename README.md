@@ -36,11 +36,16 @@ No MQTT, no gateway mode, no cloud dependency. The link is the USB cable.
 ### Profiles
 
 - A profile is one slave: unit id, poll groups, signal mappings
+- **No profile is active by default.** Activate one in **Profiles** to load its register map.
+  Deactivate it again to stop polling without deleting anything.
+- Only the active profile is polled; switching profiles loads that profile's map and unit id
+- A built-in **Generic device** profile starts with zero groups. Add signals from the register map
+  or import a modpoll CSV.
 - Each group is one contiguous read block with its own interval, so a screen of values usually
   costs one request per group
 - Visual editor for groups and signals, duplicate/delete, JSON import/export
 - modpoll CSV import and export
-- Built-in profiles: simulator demo, modsim address layout, Eastron SDM120M
+- Other built-in profiles: Demo PLC simulator, modsim address layout, Eastron SDM120M
 
 ### Workspace
 
@@ -48,7 +53,8 @@ No MQTT, no gateway mode, no cloud dependency. The link is the USB cable.
   (favorites / writable / changed / errors), write-capable detail sheet with decoded
   interpretations and bit toggles
 - **Trends** — multi-signal chart up to six series, selectable window, freeze, min/avg/max
-- **Tools** — slave-id scan, 32-register block heatmap with “add to profile”, raw PDU builder
+- **Tools** — slave-id scan, 32-register block heatmap with a named, typed “add signal” dialog,
+  raw PDU builder that decodes register values and coil states in the reply
 - **Log** — every request/response with timing, CRC/LRC status, exception codes, CSV export
 - **Link** — device selection, serial and Modbus settings, framing, built-in simulator
 
@@ -62,12 +68,14 @@ No MQTT, no gateway mode, no cloud dependency. The link is the USB cable.
 
 ## Quick start without hardware
 
-1. Install and open the app.
-2. **Link → Start simulator**.
-3. Open **Live**. The built-in *Demo PLC* profile polls units 1–3 with live float, integer,
-   string, coil and discrete data.
+1. Install and open the app. No profile is active on first launch, so nothing is polled.
+2. **Link → Start simulator**. If no profile is active (or the active one has no signals), the
+   *Demo PLC* profile is activated automatically.
+3. Open **Live**. The simulator answers on units 1–3 with live float, integer, string, coil and
+   discrete data.
 4. Tap a tile to inspect raw words, switch endianness interpretations, or write a value.
-5. Open **Tools → Register map** and read 32 holding registers.
+5. Open **Tools → Register map**, read 32 holding registers, tap a cell, give it a name and type,
+   then **Add signal**. The new signal is saved in the active profile and appears as a Live card.
 
 The simulator uses the same framing and function-code validation as a real device, including
 exception responses (illegal address), timeouts for missing unit ids and both RTU and ASCII

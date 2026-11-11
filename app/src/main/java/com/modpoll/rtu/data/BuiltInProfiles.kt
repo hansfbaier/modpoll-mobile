@@ -7,11 +7,23 @@ import java.util.UUID
  * so it works out of the box without hardware.
  */
 object BuiltInProfiles {
+    const val GENERIC_ID = "builtin.generic"
     const val DEMO_ID = "builtin.demo-plc"
     const val MODSIM_ID = "builtin.modsim"
     const val SDM120_ID = "builtin.sdm120"
 
-    fun all(): List<DeviceProfile> = listOf(demoPlc(), modsimReference(), sdm120())
+    fun all(): List<DeviceProfile> = listOf(generic(), demoPlc(), modsimReference(), sdm120())
+
+    /** Empty starting point. It is present by default but not active. */
+    fun generic(): DeviceProfile =
+        DeviceProfile(
+            id = GENERIC_ID,
+            name = "Generic device",
+            unitId = 1,
+            description = "Empty profile. Activate it, then add groups/signals or import a modpoll CSV.",
+            builtIn = true,
+            groups = emptyList(),
+        )
 
     fun demoPlc(): DeviceProfile =
         DeviceProfile(

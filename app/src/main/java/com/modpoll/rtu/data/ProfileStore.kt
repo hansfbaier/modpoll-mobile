@@ -28,17 +28,25 @@ class ProfileStore(
             val parsed = json.decodeFromString<ProfilesFile>(file.readText())
             val existingIds = parsed.profiles.map { it.id }.toSet()
             val missingBuiltIns = BuiltInProfiles.all().filter { it.id !in existingIds }
-            val merged = parsed.copy(profiles = parsed.profiles + missingBuiltIns)
+            val mergedProfiles = missingBuiltIns + parsed.profiles
             val active =
-                if (merged.profiles.any { it.id == merged.activeProfileId }) {
-                    merged.activeProfileId
+                if (parsed.version < 2) {
+                    // Version 2 starts with no active profile: nothing is polled until the user
+                    // explicitly activates a profile.
+                    ""
+                } else if (mergedProfiles.any { it.id == parsed.activeProfileId }) {
+                    parsed.activeProfileId
                 } else {
-                    merged.profiles
-                        .firstOrNull()
-                        ?.id
-                        .orEmpty()
+                    ""
                 }
-            merged.copy(activeProfileId = active)
+            val result =
+                parsed.copy(
+                    version = 2,
+                    activeProfileId = active,
+                    profiles = mergedProfiles,
+                )
+            if (result != parsed) runCatching { save(result) }
+            result
         } catch (failure: Exception) {
             // Keep the unreadable file for recovery, then start from defaults.
             runCatching { file.renameTo(File(file.parentFile, "profiles.corrupt.json")) }
@@ -82,10 +90,10 @@ class ProfileStore(
         json.encodeToString(kotlinx.serialization.builtins.ListSerializer(DeviceProfile.serializer()), profiles)
 
     private fun defaultFile(): ProfilesFile {
-        val profiles = BuiltInProfiles.all()
         return ProfilesFile(
-            activeProfileId = BuiltInProfiles.DEMO_ID,
-            profiles = profiles,
+            version = 2,
+            activeProfileId = "",
+            profiles = BuiltInProfiles.all(),
         )
     }
 }

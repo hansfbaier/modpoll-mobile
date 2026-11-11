@@ -160,7 +160,13 @@ fun ModPollRoot(vm: AppViewModel) {
         ) { padding ->
             Box(Modifier.padding(padding).fillMaxSize()) {
                 when (tab) {
-                    HomeTab.LIVE -> MonitorScreen(vm = vm, onOpenLink = { tab = HomeTab.LINK })
+                    HomeTab.LIVE -> {
+                        MonitorScreen(
+                            vm = vm,
+                            onOpenLink = { tab = HomeTab.LINK },
+                            onOpenProfiles = { showProfiles = true },
+                        )
+                    }
                     HomeTab.TRENDS -> TrendsScreen(vm)
                     HomeTab.TOOLS -> ToolsScreen(vm)
                     HomeTab.LOG -> ConsoleScreen(vm)
@@ -203,7 +209,7 @@ fun ModPollRoot(vm: AppViewModel) {
     if (showAbout) {
         AlertDialog(
             onDismissRequest = { showAbout = false },
-            title = { Text("ModPoll RTU 1.0") },
+            title = { Text("ModPoll RTU 1.1") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(

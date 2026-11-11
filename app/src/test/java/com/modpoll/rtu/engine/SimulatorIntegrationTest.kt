@@ -122,6 +122,25 @@ class SimulatorIntegrationTest {
         }
 
     @Test
+    fun pollingUsesProfileUnitId() =
+        runBlocking {
+            val profile = BuiltInProfiles.demoPlc().copy(unitId = 2)
+            val transport = SimulatedTransport(Framer.RTU, responseDelayMs = 1)
+            transport.open()
+            val master = ModbusMaster(transport, Framer.RTU, 1, defaultTimeoutMs = 500, defaultRetries = 0)
+            val engine = PollEngine(master, profile, autoDisableAfterFailures = false)
+            try {
+                engine.pollOnce()
+                val voltage = engine.state.value.values.values.first { it.signal.name == "Voltage" }
+                assertNotNull(voltage.measurement?.numeric)
+                assertTrue(engine.state.value.values.values.all { it.error == null })
+            } finally {
+                engine.shutdown()
+                transport.close()
+            }
+        }
+
+    @Test
     fun throughputIsFastEnoughForPolling() =
         runBlocking {
             val transport = SimulatedTransport(Framer.RTU, responseDelayMs = 1)

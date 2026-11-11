@@ -214,7 +214,7 @@ fun LinkScreen(
                 Spacer(Modifier.height(8.dp))
                 Button(
                     onClick = { selected?.let(vm::connectUsb) },
-                    enabled = selected != null && selected.supported && !link.connecting,
+                    enabled = selected != null && selected.supported && !link.connecting && activeProfile != null,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
                 ) {
@@ -225,6 +225,10 @@ fun LinkScreen(
                 if (selected != null && !selected.supported) {
                     Spacer(Modifier.height(6.dp))
                     ErrorText("No driver for this device. Try a CH340/CP210x/FTDI adapter.")
+                }
+                if (activeProfile == null) {
+                    Spacer(Modifier.height(6.dp))
+                    ErrorText("No active profile. Activate one in Profiles before connecting.")
                 }
             }
         }
@@ -320,6 +324,14 @@ fun LinkScreen(
                         }
                     }
                 }
+            }
+            if (activeProfile == null) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "No active profile. Open Profiles → Activate to load a register map.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = AccentAmber,
+                )
             }
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

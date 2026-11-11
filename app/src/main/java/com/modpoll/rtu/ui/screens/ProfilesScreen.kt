@@ -1,5 +1,6 @@
 package com.modpoll.rtu.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -33,6 +34,7 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FileOpen
+import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -92,6 +94,8 @@ fun ProfilesScreen(
     var deleteProfile by remember { mutableStateOf<DeviceProfile?>(null) }
     var csvExportProfile by remember { mutableStateOf<DeviceProfile?>(null) }
 
+    BackHandler { onBack() }
+
     val importCsv =
         rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             uri?.let(vm::importCsvFromUri)
@@ -136,7 +140,12 @@ fun ProfilesScreen(
             Column(Modifier.weight(1f)) {
                 Text("Device profiles", style = MaterialTheme.typography.titleLarge)
                 Text(
-                    "${profiles.size} profiles · active unit ${profiles.firstOrNull { it.id == activeId }?.unitId ?: "—"}",
+                    "${profiles.size} profiles · " +
+                        if (activeId.isBlank()) {
+                            "none active"
+                        } else {
+                            "active unit ${profiles.firstOrNull { it.id == activeId }?.unitId ?: "—"}"
+                        },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -152,6 +161,16 @@ fun ProfilesScreen(
                 .padding(horizontal = 14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            if (activeId.isBlank()) {
+                SectionCard(accent = AccentRose) {
+                    Text("No active profile", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "Nothing is polled until you activate a profile. Activating one loads only its register map.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
             SectionCard {
                 Text("Import / export", style = MaterialTheme.typography.titleSmall)
                 Spacer(Modifier.height(4.dp))
@@ -192,7 +211,7 @@ fun ProfilesScreen(
                             1.dp,
                             if (isActive) AccentCyan.copy(alpha = 0.55f) else MaterialTheme.colorScheme.outlineVariant,
                         ),
-                    modifier = Modifier.fillMaxWidth().clickable { vm.selectProfile(profile.id) },
+                    modifier = Modifier.fillMaxWidth(),
                 ) {
                     Column(Modifier.padding(14.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -237,10 +256,18 @@ fun ProfilesScreen(
                             Modifier.horizontalScroll(rememberScrollState()),
                             horizontalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
-                            TextButton(onClick = { vm.selectProfile(profile.id) }) {
-                                Icon(Icons.Filled.Check, null, Modifier.size(15.dp))
-                                Spacer(Modifier.width(4.dp))
-                                Text("Select")
+                            if (isActive) {
+                                TextButton(onClick = vm::deactivateProfile) {
+                                    Icon(Icons.Outlined.PowerSettingsNew, null, Modifier.size(15.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Deactivate")
+                                }
+                            } else {
+                                TextButton(onClick = { vm.selectProfile(profile.id) }) {
+                                    Icon(Icons.Filled.Check, null, Modifier.size(15.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Activate")
+                                }
                             }
                             TextButton(onClick = { editingId = profile.id }) {
                                 Icon(Icons.Outlined.Edit, null, Modifier.size(15.dp))
@@ -349,6 +376,8 @@ private fun ProfileEditorScreen(
     var signalDialogGroup by remember { mutableStateOf<SignalGroup?>(null) }
     var editSignal by remember { mutableStateOf<Signal?>(null) }
     var deleteGroupTarget by remember { mutableStateOf<SignalGroup?>(null) }
+
+    BackHandler { onBack() }
 
     if (profile == null) {
         androidx.compose.runtime.LaunchedEffect(Unit) { onBack() }

@@ -28,13 +28,17 @@ import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
@@ -57,6 +61,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.modpoll.rtu.data.DataType
+import com.modpoll.rtu.data.DeviceProfile
 import com.modpoll.rtu.data.ObjectType
 import com.modpoll.rtu.ui.AppViewModel
 import com.modpoll.rtu.ui.RegisterCell
@@ -71,6 +76,7 @@ import com.modpoll.rtu.ui.theme.AccentAmber
 import com.modpoll.rtu.ui.theme.AccentCyan
 import com.modpoll.rtu.ui.theme.AccentLime
 import com.modpoll.rtu.ui.theme.AccentRose
+import kotlin.math.abs
 import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.min
@@ -248,6 +254,7 @@ private fun DiscoverTab(vm: AppViewModel) {
 @Composable
 private fun RegisterMapTab(vm: AppViewModel) {
     val scan by vm.registerScan.collectAsStateWithLifecycle()
+    val profile by vm.activeProfile.collectAsStateWithLifecycle()
     var objectType by rememberSaveable { mutableStateOf(ObjectType.HOLDING_REGISTER) }
     var start by rememberSaveable { mutableStateOf("0") }
     var count by rememberSaveable { mutableStateOf("32") }
@@ -263,7 +270,7 @@ private fun RegisterMapTab(vm: AppViewModel) {
                 Text("Register map", style = MaterialTheme.typography.titleSmall)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "Sweep a range in 32-register blocks. Tap a cell to inspect it or add it to the active profile.",
+                    "Sweep a range in 32-register blocks. Tap a cell to inspect it or add a named signal to the active profile.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -359,53 +366,163 @@ private fun RegisterMapTab(vm: AppViewModel) {
 
     if (selected != null) {
         val cell = selected!!
-        AlertDialog(
-            onDismissRequest = { selected = null },
-            title = { Text("Address ${cell.address}") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    if (cell.value == null) {
-                        ErrorText(cell.error ?: "Read failed")
+        AddScannedSignalDialog(
+            cell = cell,
+            objectType = objectType,
+            cells = scan.cells,
+            profile = profile,
+            onDismiss = { selected = null },
+            onAdd = { name, dataType, writable ->
+                if (vm.addSignalToActiveProfile(objectType, cell.address, dataType, name, writable)) {
+                    selected = null
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun AddScannedSignalDialog(
+    cell: RegisterCell,
+    objectType: ObjectType,
+    cells: List<RegisterCell>,
+    profile: DeviceProfile?,
+    onDismiss: () -> Unit,
+    onAdd: (String, DataType, Boolean) -> Unit,
+) {
+    val types =
+        if (objectType.isBitTable) {
+            listOf(DataType.BOOL, DataType.BOOL8, DataType.BOOL16)
+        } else {
+            listOf(DataType.UINT16, DataType.INT16, DataType.UINT32, DataType.INT32, DataType.FLOAT32, DataType.FLOAT64)
+        }
+    val suggested = remember(cell.address, objectType, cells) { suggestDataType(objectType, cell, cells) }
+    var name by remember { mutableStateOf("${objectType.shortLabel} ${cell.address}") }
+    var dataType by remember { mutableStateOf(suggested) }
+    var writable by remember {
+        mutableStateOf(objectType == ObjectType.HOLDING_REGISTER || objectType == ObjectType.COIL)
+    }
+    var typeMenu by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val targetGroup =
+        profile?.groups?.firstOrNull {
+            it.objectType == objectType && cell.address >= it.start && cell.address <= it.endAddress
+        }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(if (objectType.isBitTable) "Coil / input ${cell.address}" else "Register ${cell.address}")
+        },
+        text = {
+            Column(
+                Modifier
+                    .height(440.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (cell.value == null) {
+                    ErrorText(cell.error ?: "Read failed")
+                } else {
+                    KeyValueMini("Hex", "0x%04X".format(cell.value))
+                    KeyValueMini("Decimal", cell.value.toString())
+                    KeyValueMini("Binary", "%016d".format(cell.value.toString(2).toLong()))
+                }
+                HorizontalDivider(Modifier.padding(vertical = 2.dp))
+                Text(
+                    if (profile != null) {
+                        "Adds a named signal to the active profile “${profile.name}”. It appears as a card on Live."
                     } else {
-                        KeyValueMini("Hex", "0x%04X".format(cell.value))
-                        KeyValueMini("Decimal", cell.value.toString())
-                        KeyValueMini("Binary", "%016d".format(cell.value.toString(2).toLong()))
+                        "No active profile. Activate one in Profiles → Activate before adding a signal."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (profile != null) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+                )
+                Text(
+                    if (targetGroup != null) {
+                        "Group: ${targetGroup.name} (${targetGroup.start}..${targetGroup.endAddress})"
+                    } else {
+                        "Group: a new ${objectType.shortLabel} group will be created automatically."
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(2.dp))
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Signal name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Box {
+                    OutlinedButton(onClick = { typeMenu = true }, modifier = Modifier.fillMaxWidth()) {
+                        Text("Data type: ${dataType.label}${if (dataType == suggested) " (suggested)" else ""}")
                     }
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        if (objectType.isBitTable) "Add this bit as a BOOL8 group?" else "Add this register to the active profile:",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (objectType.isBitTable) {
-                            TextButton(onClick = {
-                                vm.quickAddSignal(objectType, cell.address, DataType.BOOL8)
-                                selected = null
-                            }) {
-                                Text("Add BOOL8")
-                            }
-                        } else {
-                            TextButton(onClick = {
-                                vm.quickAddSignal(objectType, cell.address, DataType.UINT16)
-                                selected = null
-                            }) {
-                                Text("Add UINT16")
-                            }
-                            TextButton(onClick = {
-                                vm.quickAddSignal(objectType, cell.address, DataType.FLOAT32)
-                                selected = null
-                            }) {
-                                Text("Add FLOAT32")
-                            }
+                    DropdownMenu(expanded = typeMenu, onDismissRequest = { typeMenu = false }) {
+                        types.forEach { option ->
+                            DropdownMenuItem(
+                                text = { Text(option.label) },
+                                onClick = {
+                                    dataType = option
+                                    typeMenu = false
+                                },
+                            )
                         }
                     }
                 }
-            },
-            confirmButton = {
-                TextButton(onClick = { selected = null }) { Text("Close") }
-            },
-        )
+                if (objectType == ObjectType.HOLDING_REGISTER || objectType == ObjectType.COIL) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Writable", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "Add write controls to the detail sheet",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(checked = writable, onCheckedChange = { writable = it })
+                    }
+                }
+                error?.let { ErrorText(it) }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    if (name.isBlank()) {
+                        error = "Enter a signal name"
+                    } else {
+                        onAdd(name, dataType, writable)
+                    }
+                },
+                enabled = profile != null,
+            ) {
+                Text("Add signal")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
+private fun suggestDataType(
+    objectType: ObjectType,
+    cell: RegisterCell,
+    cells: List<RegisterCell>,
+): DataType {
+    if (objectType.isBitTable) return DataType.BOOL
+    val value = cell.value ?: return DataType.UINT16
+    val next = cells.firstOrNull { it.address == cell.address + 1 }?.value ?: return DataType.UINT16
+    // A plausible float32 usually has at least one word above 0x1000. Small integer pairs
+    // like 1/0 would otherwise decode as 1.4e-45 and make a bad default.
+    if (value <= 0x1000 && next <= 0x1000) return DataType.UINT16
+    val float = Float.fromBits((value shl 16) or next)
+    return if (float.isFinite() && float != 0f && abs(float.toDouble()) in 1e-3..1e9) {
+        DataType.FLOAT32
+    } else {
+        DataType.UINT16
     }
 }
 

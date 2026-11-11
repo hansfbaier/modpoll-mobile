@@ -88,6 +88,7 @@ private enum class MonitorFilter(
 fun MonitorScreen(
     vm: AppViewModel,
     onOpenLink: () -> Unit,
+    onOpenProfiles: () -> Unit,
 ) {
     val profile by vm.activeProfile.collectAsStateWithLifecycle()
     val poll by vm.poll.collectAsStateWithLifecycle()
@@ -124,7 +125,9 @@ fun MonitorScreen(
                 profileName = profile?.name ?: "No profile",
                 unitId = profile?.unitId ?: 1,
                 framer = settings.framer.label,
+                hasProfile = profile != null,
                 onConnect = onOpenLink,
+                onOpenProfiles = onOpenProfiles,
                 onTogglePolling = vm::togglePolling,
                 onReadOnce = vm::readOnce,
             )
@@ -132,8 +135,14 @@ fun MonitorScreen(
         if (profile == null) {
             item {
                 EmptyState(
-                    title = "No device profile",
-                    body = "Create a profile or import a modpoll CSV to describe the registers of your device.",
+                    title = "No active profile",
+                    body = "Activate a profile to load its register map. Nothing is polled while all profiles are deactivated.",
+                    icon = { Icon(Icons.Outlined.Usb, null, Modifier.size(30.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+                    action = {
+                        Button(onClick = onOpenProfiles, shape = RoundedCornerShape(12.dp)) {
+                            Text("Choose a profile")
+                        }
+                    },
                 )
             }
             return@LazyColumn
@@ -148,7 +157,7 @@ fun MonitorScreen(
                 total = groups.sumOf { it.signals.size },
                 shown =
                     groups.sumOf { group ->
-                        group.signals.count { signal -> matches(group, signal, poll.values[signal.id], query, filter) }
+                        group.signals.count { signal -> matches(signal, poll.values[signal.id], query, filter) }
                     },
             )
         }
@@ -161,7 +170,7 @@ fun MonitorScreen(
             }
         }
         groups.forEach { group ->
-            val visible = group.signals.filter { matches(group, it, poll.values[it.id], query, filter) }
+            val visible = group.signals.filter { matches(it, poll.values[it.id], query, filter) }
             if (visible.isEmpty() && (query.isNotBlank() || filter != MonitorFilter.ALL)) {
                 return@forEach
             }
@@ -211,7 +220,9 @@ private fun StatusCard(
     profileName: String,
     unitId: Int,
     framer: String,
+    hasProfile: Boolean,
     onConnect: () -> Unit,
+    onOpenProfiles: () -> Unit,
     onTogglePolling: () -> Unit,
     onReadOnce: () -> Unit,
 ) {
@@ -225,6 +236,7 @@ private fun StatusCard(
     val statusText =
         when {
             link.connecting -> "Connecting"
+            link.connected && !hasProfile -> "No profile"
             link.connected && link.polling -> "Polling"
             link.connected -> "Paused"
             else -> "Offline"
@@ -261,7 +273,11 @@ private fun StatusCard(
         }
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (link.connected) {
+            if (link.connected && !hasProfile) {
+                Button(onClick = onOpenProfiles, shape = RoundedCornerShape(12.dp)) {
+                    Text("Choose a profile")
+                }
+            } else if (link.connected) {
                 Button(onClick = onTogglePolling, shape = RoundedCornerShape(12.dp)) {
                     Icon(
                         if (link.polling) Icons.Filled.Pause else Icons.Filled.PlayArrow,
@@ -483,7 +499,6 @@ private fun GroupCard(
 }
 
 private fun matches(
-    group: SignalGroup,
     signal: Signal,
     reading: SignalReading?,
     query: String,

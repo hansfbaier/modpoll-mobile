@@ -6,6 +6,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ModpollCsvTest {
+    @Test
+    fun genericProfileHasNoRegisterMap() {
+        val generic = BuiltInProfiles.generic()
+        assertTrue(generic.groups.isEmpty())
+        assertEquals(0, generic.signalCount)
+        assertTrue(BuiltInProfiles.all().first() == generic)
+    }
+
     private val sample =
         """
         # example

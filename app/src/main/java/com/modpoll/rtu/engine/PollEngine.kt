@@ -183,7 +183,7 @@ class PollEngine(
                                 ValueCodec.parseBoolean(input)
                                     ?: return@withLock Result.failure(ModbusException("Expected 0/1 or ON/OFF"))
                             if (signal.dataType == DataType.BOOL) {
-                                master.writeSingleCoil(signal.address, on)
+                                master.writeSingleCoil(signal.address, on, unitId = profile.unitId)
                             } else {
                                 return@withLock Result.failure(
                                     ModbusException("Use the bit switches to write a coil group"),
@@ -198,10 +198,15 @@ class PollEngine(
                             val on =
                                 ValueCodec.parseBoolean(input)
                                     ?: return@withLock Result.failure(ModbusException("Expected 0/1 or ON/OFF"))
-                            val current = master.readHoldingRegisters(signal.address, 1).registers?.firstOrNull() ?: 0
+                            val current =
+                                master.readHoldingRegisters(
+                                    signal.address,
+                                    1,
+                                    unitId = profile.unitId,
+                                ).registers?.firstOrNull() ?: 0
                             val bit = (signal.bit ?: 0).coerceIn(0, 15)
                             val updated = if (on) current or (1 shl bit) else current and (1 shl bit).inv()
-                            master.writeSingleRegister(signal.address, updated and 0xFFFF)
+                            master.writeSingleRegister(signal.address, updated and 0xFFFF, unitId = profile.unitId)
                         }
 
                         else -> {
@@ -213,9 +218,9 @@ class PollEngine(
 
                                 is EncodeResult.Ok -> {
                                     if (encoded.words.size == 1) {
-                                        master.writeSingleRegister(signal.address, encoded.words[0])
+                                        master.writeSingleRegister(signal.address, encoded.words[0], unitId = profile.unitId)
                                     } else {
-                                        master.writeMultipleRegisters(signal.address, encoded.words)
+                                        master.writeMultipleRegisters(signal.address, encoded.words, unitId = profile.unitId)
                                     }
                                 }
                             }
@@ -254,7 +259,7 @@ class PollEngine(
                     return@withLock Result.failure(ModbusException("Bit index out of range"))
                 }
                 try {
-                    master.writeSingleCoil(signal.address + bitIndex, on)
+                    master.writeSingleCoil(signal.address + bitIndex, on, unitId = profile.unitId)
                     pollGroup(group, force = true)
                     Result.success(Unit)
                 } catch (failure: Exception) {
@@ -304,6 +309,7 @@ class PollEngine(
         force: Boolean,
     ) {
         val started = System.currentTimeMillis()
+        val unitId = profile.unitId
         val blocks = splitBlocks(group)
         var requestCount = 0
         var failed = false
@@ -315,22 +321,22 @@ class PollEngine(
                 requestCount++
                 when (group.objectType) {
                     ObjectType.COIL -> {
-                        val result = master.readCoils(range.first, quantity)
+                        val result = master.readCoils(range.first, quantity, unitId = unitId)
                         applyBits(group, result.bits ?: BooleanArray(0), range.first, started)
                     }
 
                     ObjectType.DISCRETE_INPUT -> {
-                        val result = master.readDiscreteInputs(range.first, quantity)
+                        val result = master.readDiscreteInputs(range.first, quantity, unitId = unitId)
                         applyBits(group, result.bits ?: BooleanArray(0), range.first, started)
                     }
 
                     ObjectType.INPUT_REGISTER -> {
-                        val result = master.readInputRegisters(range.first, quantity)
+                        val result = master.readInputRegisters(range.first, quantity, unitId = unitId)
                         applyRegisters(group, result.registers ?: IntArray(0), range.first, started)
                     }
 
                     ObjectType.HOLDING_REGISTER -> {
-                        val result = master.readHoldingRegisters(range.first, quantity)
+                        val result = master.readHoldingRegisters(range.first, quantity, unitId = unitId)
                         applyRegisters(group, result.registers ?: IntArray(0), range.first, started)
                     }
                 }
