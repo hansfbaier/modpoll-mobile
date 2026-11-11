@@ -20,6 +20,8 @@ import com.modpoll.rtu.data.Signal
 import com.modpoll.rtu.data.SignalGroup
 import com.modpoll.rtu.engine.PollEngine
 import com.modpoll.rtu.engine.PollSnapshot
+import com.modpoll.rtu.engine.ScopeEngine
+import com.modpoll.rtu.engine.ScopeSnapshot
 import com.modpoll.rtu.engine.SignalReading
 import com.modpoll.rtu.modbus.ExchangeKind
 import com.modpoll.rtu.modbus.FrameExchange
@@ -139,6 +141,9 @@ class AppViewModel(
     private val _poll = MutableStateFlow(PollSnapshot())
     val poll: StateFlow<PollSnapshot> = _poll.asStateFlow()
 
+    private val _scope = MutableStateFlow(ScopeSnapshot())
+    val scope: StateFlow<ScopeSnapshot> = _scope.asStateFlow()
+
     private val _scan = MutableStateFlow(ScanUiState())
     val scan: StateFlow<ScanUiState> = _scan.asStateFlow()
 
@@ -161,6 +166,9 @@ class AppViewModel(
     private var scanJob: Job? = null
     private var registerScanJob: Job? = null
     private var lastTarget: ConnectionTarget? = null
+    private var scopeEngine: ScopeEngine? = null
+    private var scopeCollector: Job? = null
+    private var scopeResumePolling = false
 
     init {
         _link.value =
@@ -174,6 +182,7 @@ class AppViewModel(
 
     fun selectProfile(profileId: String) {
         val profile = _profiles.value.firstOrNull { it.id == profileId } ?: return
+        stopScopeInternal(resume = false)
         _activeProfileId.value = profileId
         _activeProfile.value = profile
         persist()
@@ -187,6 +196,7 @@ class AppViewModel(
 
     /** Clear the active profile. Nothing is polled until a profile is activated again. */
     fun deactivateProfile() {
+        stopScopeInternal(resume = false)
         _activeProfileId.value = ""
         _activeProfile.value = null
         persist()
@@ -558,6 +568,7 @@ class AppViewModel(
     }
 
     fun disconnect() {
+        stopScopeInternal(resume = false)
         pollCollector?.cancel()
         pollCollector = null
         engine?.shutdown()
@@ -576,6 +587,7 @@ class AppViewModel(
 
     private suspend fun onTransportLost(failure: Throwable) {
         if (!_link.value.connected) return
+        stopScopeInternal(resume = false)
         val target = lastTarget
         _link.value =
             _link.value.copy(
@@ -601,6 +613,7 @@ class AppViewModel(
 
     private fun startEngine(profile: DeviceProfile) {
         val activeMaster = master ?: return
+        stopScopeInternal(resume = false)
         pollCollector?.cancel()
         engine?.shutdown()
         val newEngine =
@@ -651,6 +664,69 @@ class AppViewModel(
             } catch (failure: Exception) {
                 _link.value = _link.value.copy(lastError = failure.message)
             }
+        }
+    }
+
+    /**
+     * Start a high-rate scope on holding-register signals. Normal polling is paused until
+     * [stopScope] is called.
+     */
+    fun startScope(
+        signalIds: Set<String>,
+        intervalMs: Long,
+    ): Boolean {
+        val activeMaster = master
+        val profile = _activeProfile.value
+        val error =
+            when {
+                activeMaster == null -> "Connect a link first"
+                profile == null -> "Activate a profile first"
+                signalIds.isEmpty() -> "Select at least one holding-register signal"
+                else -> null
+            }
+        if (error != null) {
+            _scope.value = ScopeSnapshot(running = false, intervalMs = intervalMs, lastError = error)
+            return false
+        }
+        val wasScopeRunning = scopeEngine != null
+        val resumeAfter = if (wasScopeRunning) scopeResumePolling else _link.value.polling
+        stopScopeInternal(resume = false)
+        scopeResumePolling = resumeAfter
+        engine?.pause()
+        _link.value = _link.value.copy(polling = false)
+        val sampler =
+            ScopeEngine(
+                master = activeMaster!!,
+                profile = profile!!,
+                signalIds = signalIds,
+                intervalMs = intervalMs.coerceIn(10, 2_000),
+            )
+        scopeEngine = sampler
+        scopeCollector =
+            viewModelScope.launch {
+                sampler.state.collect { snapshot -> _scope.value = snapshot }
+            }
+        sampler.start()
+        return true
+    }
+
+    fun stopScope() {
+        stopScopeInternal(resume = true)
+    }
+
+    private fun stopScopeInternal(resume: Boolean) {
+        val shouldResume = resume && scopeResumePolling
+        scopeEngine?.shutdown()
+        scopeEngine = null
+        scopeCollector?.cancel()
+        scopeCollector = null
+        scopeResumePolling = false
+        if (_scope.value.running || _scope.value.series.isNotEmpty()) {
+            _scope.value = _scope.value.copy(running = false)
+        }
+        if (shouldResume) {
+            engine?.resume()
+            _link.value = _link.value.copy(polling = engine != null)
         }
     }
 
@@ -1104,6 +1180,7 @@ class AppViewModel(
     }
 
     override fun onCleared() {
+        stopScopeInternal(resume = false)
         pollCollector?.cancel()
         engine?.shutdown()
         runCatching { transport?.close() }

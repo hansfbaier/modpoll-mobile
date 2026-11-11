@@ -62,11 +62,11 @@ import com.modpoll.rtu.data.Framer
 import com.modpoll.rtu.ui.components.Led
 import com.modpoll.rtu.ui.components.MonoText
 import com.modpoll.rtu.ui.screens.ConsoleScreen
+import com.modpoll.rtu.ui.screens.GraphsScreen
 import com.modpoll.rtu.ui.screens.LinkScreen
 import com.modpoll.rtu.ui.screens.MonitorScreen
 import com.modpoll.rtu.ui.screens.ProfilesScreen
 import com.modpoll.rtu.ui.screens.ToolsScreen
-import com.modpoll.rtu.ui.screens.TrendsScreen
 import com.modpoll.rtu.ui.theme.AccentCyan
 import com.modpoll.rtu.ui.theme.AccentLime
 import com.modpoll.rtu.ui.theme.AccentRose
@@ -76,7 +76,7 @@ private enum class HomeTab(
     val icon: ImageVector,
 ) {
     LIVE("Live", Icons.Outlined.Speed),
-    TRENDS("Trends", Icons.Outlined.ShowChart),
+    GRAPHS("Graphs", Icons.Outlined.ShowChart),
     TOOLS("Tools", Icons.Outlined.Construction),
     LOG("Log", Icons.Outlined.Terminal),
     LINK("Link", Icons.Outlined.Usb),
@@ -167,7 +167,7 @@ fun ModPollRoot(vm: AppViewModel) {
                             onOpenProfiles = { showProfiles = true },
                         )
                     }
-                    HomeTab.TRENDS -> TrendsScreen(vm)
+                    HomeTab.GRAPHS -> GraphsScreen(vm)
                     HomeTab.TOOLS -> ToolsScreen(vm)
                     HomeTab.LOG -> ConsoleScreen(vm)
                     HomeTab.LINK -> LinkScreen(vm = vm, onOpenMonitor = { tab = HomeTab.LIVE })
@@ -209,7 +209,7 @@ fun ModPollRoot(vm: AppViewModel) {
     if (showAbout) {
         AlertDialog(
             onDismissRequest = { showAbout = false },
-            title = { Text("ModPoll RTU 1.1") },
+            title = { Text("ModPoll RTU 1.2") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(

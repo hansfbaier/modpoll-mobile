@@ -52,7 +52,11 @@ No MQTT, no gateway mode, no cloud dependency. The link is the USB cable.
 - **Live** — grouped cards, live values, raw hex, per-signal sparkline, search and filters
   (favorites / writable / changed / errors), write-capable detail sheet with decoded
   interpretations and bit toggles
-- **Trends** — multi-signal chart up to six series, selectable window, freeze, min/avg/max
+- **Graphs → Live scope** — high-rate oscilloscope view for up to six holding-register signals.
+  Target interval 10–1000 ms, rolling 1–30 s window, shared or per-series scaling, actual sample
+  rate, read/error counters. Normal polling pauses while the scope runs and resumes on stop.
+- **Graphs → History** — multi-signal trend chart up to six series, selectable window, freeze,
+  min/avg/max for longer-term supervision
 - **Tools** — slave-id scan, 32-register block heatmap with a named, typed “add signal” dialog,
   raw PDU builder that decodes register values and coil states in the reply
 - **Log** — every request/response with timing, CRC/LRC status, exception codes, CSV export
@@ -66,6 +70,8 @@ No MQTT, no gateway mode, no cloud dependency. The link is the USB cable.
 |---|---|
 | ![Log](docs/screenshots/04-traffic-log.png) | ![Profiles](docs/screenshots/05-profiles.png) |
 
+![Realtime scope](docs/screenshots/06-live-scope.png)
+
 ## Quick start without hardware
 
 1. Install and open the app. No profile is active on first launch, so nothing is polled.
@@ -76,6 +82,8 @@ No MQTT, no gateway mode, no cloud dependency. The link is the USB cable.
 4. Tap a tile to inspect raw words, switch endianness interpretations, or write a value.
 5. Open **Tools → Register map**, read 32 holding registers, tap a cell, give it a name and type,
    then **Add signal**. The new signal is saved in the active profile and appears as a Live card.
+6. Open **Graphs → Live scope**, choose holding-register signals and a 10–1000 ms interval, then
+   **Start scope**. The demo profile includes sine, sawtooth and counter registers for testing.
 
 The simulator uses the same framing and function-code validation as a real device, including
 exception responses (illegal address), timeouts for missing unit ids and both RTU and ASCII
@@ -163,6 +171,9 @@ issues one request per group per interval and decodes all signals from that bloc
 - The write path encodes using the signal's declared scale/offset; verify writes on a bench
   device before using them in production.
 - Very long ASCII frames and unusual vendor timings may require a larger timeout.
+- The live scope is a holding-register viewer. While it runs, normal profile polling is paused;
+  the actual sample rate is limited by baud rate, device response time and USB latency.
+- Scope history is an in-memory ring buffer (3000 samples per series) and is not exported.
 
 ## Credits
 

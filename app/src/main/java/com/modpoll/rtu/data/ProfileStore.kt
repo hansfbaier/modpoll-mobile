@@ -29,6 +29,30 @@ class ProfileStore(
             val existingIds = parsed.profiles.map { it.id }.toSet()
             val missingBuiltIns = BuiltInProfiles.all().filter { it.id !in existingIds }
             val mergedProfiles = missingBuiltIns + parsed.profiles
+            val needsScopeGroup = parsed.version < 3
+            val migratedProfiles =
+                if (needsScopeGroup) {
+                    val scopeGroup =
+                        BuiltInProfiles
+                            .demoPlc()
+                            .groups
+                            .firstOrNull { it.id == "builtin.demo-plc.scope" }
+                    if (scopeGroup != null) {
+                        mergedProfiles.map { profile ->
+                            if (profile.id == BuiltInProfiles.DEMO_ID &&
+                                profile.groups.none { it.id == scopeGroup.id }
+                            ) {
+                                profile.copy(groups = profile.groups + scopeGroup)
+                            } else {
+                                profile
+                            }
+                        }
+                    } else {
+                        mergedProfiles
+                    }
+                } else {
+                    mergedProfiles
+                }
             val active =
                 if (parsed.version < 2) {
                     // Version 2 starts with no active profile: nothing is polled until the user
@@ -41,9 +65,9 @@ class ProfileStore(
                 }
             val result =
                 parsed.copy(
-                    version = 2,
+                    version = 3,
                     activeProfileId = active,
-                    profiles = mergedProfiles,
+                    profiles = migratedProfiles,
                 )
             if (result != parsed) runCatching { save(result) }
             result
@@ -91,7 +115,7 @@ class ProfileStore(
 
     private fun defaultFile(): ProfilesFile {
         return ProfilesFile(
-            version = 2,
+            version = 3,
             activeProfileId = "",
             profiles = BuiltInProfiles.all(),
         )

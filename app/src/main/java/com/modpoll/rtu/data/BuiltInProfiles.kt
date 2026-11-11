@@ -83,6 +83,20 @@ object BuiltInProfiles {
                             ),
                     ),
                     SignalGroup(
+                        id = "builtin.demo-plc.scope",
+                        name = "Realtime demo",
+                        objectType = ObjectType.HOLDING_REGISTER,
+                        start = 24,
+                        count = 12,
+                        intervalMs = 1000,
+                        signals =
+                            listOf(
+                                sig("Sine wave", 24, DataType.FLOAT32, unit = "%", favorite = true, decimals = 1),
+                                sig("Sawtooth", 26, DataType.UINT16, favorite = true, decimals = 0),
+                                sig("Fast counter", 28, DataType.UINT32, favorite = true, decimals = 0),
+                            ),
+                    ),
+                    SignalGroup(
                         id = "builtin.demo-plc.coils",
                         name = "Relay outputs",
                         objectType = ObjectType.COIL,
@@ -256,6 +270,7 @@ object BuiltInProfiles {
         decimals: Int? = null,
         stringBytes: Int = 0,
         description: String = "",
+        favorite: Boolean = false,
     ): Signal =
         Signal(
             id = UUID.randomUUID().toString(),
@@ -268,5 +283,6 @@ object BuiltInProfiles {
             decimals = decimals,
             stringBytes = stringBytes,
             description = description,
+            favorite = favorite,
         )
 }

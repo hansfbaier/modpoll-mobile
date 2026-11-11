@@ -4,7 +4,7 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class ProfilesFile(
-    val version: Int = 2,
+    val version: Int = 3,
     val activeProfileId: String = "",
     val profiles: List<DeviceProfile> = emptyList(),
     val link: LinkSettings = LinkSettings(),

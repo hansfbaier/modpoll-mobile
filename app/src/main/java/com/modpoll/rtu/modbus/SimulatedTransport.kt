@@ -163,6 +163,9 @@ class SimulatedBus(
         hr[21] = 2
         hr[22] = 3
         hr[23] = 4
+        putFloat(hr, 24, 0f)
+        hr[26] = 0
+        putUInt32(hr, 28, 0)
 
         // modsim-compatible addresses (3xxxx / 4xxxx), so imported modpoll examples work.
         putFloat(ir, 30000, 230.4f)
@@ -354,6 +357,10 @@ class SimulatedBus(
         putFloat(ir, 30004, power.toFloat())
         putFloat(ir, 30006, frequency.toFloat())
 
+        // Fast-changing demo holding registers for the realtime scope.
+        putFloat(hr, 24, (50.0 + 40.0 * sin(seconds * 6.0)).toFloat())
+        hr[26] = ((seconds * 200).toInt() and 0xFFFF)
+        putUInt32(hr, 28, (seconds * 1000).toLong())
     }
 
     private fun putFloat(
