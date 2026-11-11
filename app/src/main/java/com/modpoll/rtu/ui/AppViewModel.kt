@@ -1,0 +1,1065 @@
+package com.modpoll.rtu.ui
+
+import android.app.Application
+import android.net.Uri
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.modpoll.rtu.AppContainer
+import com.modpoll.rtu.ModPollApp
+import com.modpoll.rtu.data.CsvImportResult
+import com.modpoll.rtu.data.DataType
+import com.modpoll.rtu.data.DeviceProfile
+import com.modpoll.rtu.data.Framer
+import com.modpoll.rtu.data.LinkSettings
+import com.modpoll.rtu.data.ModpollCsv
+import com.modpoll.rtu.data.ObjectType
+import com.modpoll.rtu.data.ProfilesFile
+import com.modpoll.rtu.data.SerialSettings
+import com.modpoll.rtu.data.Signal
+import com.modpoll.rtu.data.SignalGroup
+import com.modpoll.rtu.engine.PollEngine
+import com.modpoll.rtu.engine.PollSnapshot
+import com.modpoll.rtu.engine.SignalReading
+import com.modpoll.rtu.modbus.ExchangeKind
+import com.modpoll.rtu.modbus.FrameExchange
+import com.modpoll.rtu.modbus.ModbusException
+import com.modpoll.rtu.modbus.ModbusMaster
+import com.modpoll.rtu.modbus.ModbusResponse
+import com.modpoll.rtu.modbus.SerialTransport
+import com.modpoll.rtu.modbus.SimulatedTransport
+import com.modpoll.rtu.modbus.toHex
+import com.modpoll.rtu.usb.UsbSerialDeviceInfo
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import java.util.UUID
+
+enum class TransportKind {
+    NONE,
+    USB,
+    SIMULATOR,
+}
+
+data class LinkUiState(
+    val kind: TransportKind = TransportKind.NONE,
+    val connected: Boolean = false,
+    val connecting: Boolean = false,
+    val polling: Boolean = false,
+    val label: String = "",
+    val lastError: String? = null,
+    val selectedDeviceKey: String = "",
+)
+
+data class UnitProbe(
+    val unitId: Int,
+    val latencyMs: Long,
+    val sample: String,
+)
+
+data class ScanUiState(
+    val running: Boolean = false,
+    val progress: Float = 0f,
+    val label: String = "",
+    val hits: List<UnitProbe> = emptyList(),
+    val error: String? = null,
+)
+
+data class RegisterCell(
+    val address: Int,
+    val value: Int?,
+    val error: String? = null,
+)
+
+data class RegisterScanState(
+    val running: Boolean = false,
+    val progress: Float = 0f,
+    val objectType: ObjectType = ObjectType.HOLDING_REGISTER,
+    val start: Int = 0,
+    val count: Int = 0,
+    val cells: List<RegisterCell> = emptyList(),
+    val error: String? = null,
+)
+
+data class RawState(
+    val sending: Boolean = false,
+    val requestHex: String = "",
+    val responseHex: String = "",
+    val durationMs: Long = 0,
+    val attempts: Int = 0,
+    val error: String? = null,
+    val decoded: String = "",
+)
+
+data class ImportReport(
+    val title: String,
+    val warnings: List<String> = emptyList(),
+)
+
+class AppViewModel(
+    application: Application,
+) : AndroidViewModel(application) {
+    private val container: AppContainer = (application as ModPollApp).container
+    private val store = container.profileStore
+    private val usb = container.usb
+    private val trafficRecorder = container.traffic
+    private val json =
+        Json {
+            prettyPrint = true
+            encodeDefaults = true
+        }
+
+    private val initial = store.load()
+
+    private val _profiles = MutableStateFlow(initial.profiles)
+    val profiles: StateFlow<List<DeviceProfile>> = _profiles.asStateFlow()
+
+    private val _activeProfileId = MutableStateFlow(initial.activeProfileId)
+    val activeProfileId: StateFlow<String> = _activeProfileId.asStateFlow()
+
+    private val _activeProfile = MutableStateFlow(initial.profiles.firstOrNull { it.id == initial.activeProfileId })
+    val activeProfile: StateFlow<DeviceProfile?> = _activeProfile.asStateFlow()
+
+    private val _linkSettings = MutableStateFlow(initial.link)
+    val linkSettings: StateFlow<LinkSettings> = _linkSettings.asStateFlow()
+
+    private val _link = MutableStateFlow(LinkUiState())
+    val link: StateFlow<LinkUiState> = _link.asStateFlow()
+
+    private val _poll = MutableStateFlow(PollSnapshot())
+    val poll: StateFlow<PollSnapshot> = _poll.asStateFlow()
+
+    private val _scan = MutableStateFlow(ScanUiState())
+    val scan: StateFlow<ScanUiState> = _scan.asStateFlow()
+
+    private val _registerScan = MutableStateFlow(RegisterScanState())
+    val registerScan: StateFlow<RegisterScanState> = _registerScan.asStateFlow()
+
+    private val _raw = MutableStateFlow(RawState())
+    val raw: StateFlow<RawState> = _raw.asStateFlow()
+
+    private val _report = MutableStateFlow<ImportReport?>(null)
+    val report: StateFlow<ImportReport?> = _report.asStateFlow()
+
+    val usbDevices = usb.devices
+    val traffic: StateFlow<List<FrameExchange>> = trafficRecorder.entries
+
+    private var transport: SerialTransport? = null
+    private var master: ModbusMaster? = null
+    private var engine: PollEngine? = null
+    private var pollCollector: Job? = null
+    private var scanJob: Job? = null
+    private var registerScanJob: Job? = null
+    private var lastTarget: ConnectionTarget? = null
+
+    init {
+        _link.value =
+            _link.value.copy(
+                selectedDeviceKey = initial.link.lastDeviceKey,
+                polling = false,
+            )
+    }
+
+    // ---------------------------------------------------------------- profiles
+
+    fun selectProfile(profileId: String) {
+        val profile = _profiles.value.firstOrNull { it.id == profileId } ?: return
+        _activeProfileId.value = profileId
+        _activeProfile.value = profile
+        persist()
+        engine?.updateProfile(profile)
+    }
+
+    fun createProfile(name: String = "New device"): DeviceProfile {
+        val profile =
+            DeviceProfile(
+                id = UUID.randomUUID().toString(),
+                name = name.ifBlank { "New device" },
+                unitId = 1,
+            ).ensureIds()
+        _profiles.value = _profiles.value + profile
+        _activeProfileId.value = profile.id
+        _activeProfile.value = profile
+        persist()
+        return profile
+    }
+
+    fun duplicateProfile(profileId: String) {
+        val source = _profiles.value.firstOrNull { it.id == profileId } ?: return
+        val copy =
+            source.copy(
+                id = UUID.randomUUID().toString(),
+                name = "${source.name} copy",
+                builtIn = false,
+                groups =
+                    source.groups.map { group ->
+                        group.copy(
+                            id = UUID.randomUUID().toString(),
+                            signals = group.signals.map { it.copy(id = UUID.randomUUID().toString()) },
+                        )
+                    },
+            )
+        _profiles.value = _profiles.value + copy
+        _activeProfileId.value = copy.id
+        _activeProfile.value = copy
+        persist()
+    }
+
+    fun deleteProfile(profileId: String) {
+        val target = _profiles.value.firstOrNull { it.id == profileId } ?: return
+        if (target.builtIn) {
+            _report.value = ImportReport("Built-in profiles cannot be deleted. Duplicate it instead.")
+            return
+        }
+        val remaining = _profiles.value.filterNot { it.id == profileId }
+        if (remaining.isEmpty()) return
+        _profiles.value = remaining
+        if (_activeProfileId.value == profileId) {
+            val next = remaining.first()
+            _activeProfileId.value = next.id
+            _activeProfile.value = next
+            engine?.updateProfile(next)
+        }
+        persist()
+    }
+
+    fun upsertProfile(profile: DeviceProfile) {
+        val normalized = profile.normalize()
+        _profiles.value = _profiles.value.map { if (it.id == normalized.id) normalized else it }
+        if (_activeProfileId.value == normalized.id) {
+            _activeProfile.value = normalized
+            engine?.updateProfile(normalized)
+        }
+        persist()
+    }
+
+    fun upsertGroup(
+        profileId: String,
+        group: SignalGroup,
+    ) {
+        val profile = _profiles.value.firstOrNull { it.id == profileId } ?: return
+        val normalizedGroup = group.ensureIds()
+        val groups =
+            if (profile.groups.any { it.id == normalizedGroup.id }) {
+                profile.groups.map { if (it.id == normalizedGroup.id) normalizedGroup else it }
+            } else {
+                profile.groups + normalizedGroup
+            }
+        upsertProfile(profile.copy(groups = groups))
+    }
+
+    fun deleteGroup(
+        profileId: String,
+        groupId: String,
+    ) {
+        val profile = _profiles.value.firstOrNull { it.id == profileId } ?: return
+        upsertProfile(profile.copy(groups = profile.groups.filterNot { it.id == groupId }))
+    }
+
+    fun upsertSignal(
+        profileId: String,
+        groupId: String,
+        signal: Signal,
+    ) {
+        val profile = _profiles.value.firstOrNull { it.id == profileId } ?: return
+        val group = profile.groups.firstOrNull { it.id == groupId } ?: return
+        val withId = signal.ensureId()
+        val signals =
+            if (group.signals.any { it.id == withId.id }) {
+                group.signals.map { if (it.id == withId.id) withId else it }
+            } else {
+                group.signals + withId
+            }
+        upsertProfile(
+            profile.copy(
+                groups = profile.groups.map { if (it.id == groupId) group.copy(signals = signals) else it },
+            ),
+        )
+    }
+
+    fun deleteSignal(
+        profileId: String,
+        groupId: String,
+        signalId: String,
+    ) {
+        val profile = _profiles.value.firstOrNull { it.id == profileId } ?: return
+        upsertProfile(
+            profile.copy(
+                groups =
+                    profile.groups.map { group ->
+                        if (group.id == groupId) group.copy(signals = group.signals.filterNot { it.id == signalId }) else group
+                    },
+            ),
+        )
+    }
+
+    fun toggleFavorite(
+        profileId: String,
+        groupId: String,
+        signalId: String,
+    ) {
+        val profile = _profiles.value.firstOrNull { it.id == profileId } ?: return
+        val group = profile.groups.firstOrNull { it.id == groupId } ?: return
+        val signal = group.signals.firstOrNull { it.id == signalId } ?: return
+        upsertSignal(profileId, groupId, signal.copy(favorite = !signal.favorite))
+    }
+
+    fun setProfileUnitId(unitId: Int) {
+        val profile = _activeProfile.value ?: return
+        upsertProfile(profile.copy(unitId = unitId.coerceIn(1, 247)))
+    }
+
+    /** Add a scanned address to the active profile, creating or extending a group as needed. */
+    fun quickAddSignal(
+        objectType: ObjectType,
+        address: Int,
+        dataType: DataType,
+    ) {
+        val profile = _activeProfile.value ?: createProfile("Scanned device")
+        val span =
+            if (objectType.isBitTable) {
+                dataType.bitWidth.coerceAtLeast(1)
+            } else {
+                (if (dataType == DataType.STRING) 1 else dataType.registerSpan).coerceAtLeast(1)
+            }
+        val group =
+            profile.groups.firstOrNull { it.objectType == objectType && address >= it.start && address <= it.endAddress }
+                ?: SignalGroup(
+                    id = UUID.randomUUID().toString(),
+                    name = "${objectType.label} $address",
+                    objectType = objectType,
+                    start = if (objectType.isBitTable) address else (address / 16) * 16,
+                    count = maxOf(16, address - (if (objectType.isBitTable) address else (address / 16) * 16) + span),
+                    intervalMs = 1000,
+                )
+        val expanded =
+            if (address + span - 1 > group.endAddress) {
+                group.copy(count = address + span - group.start)
+            } else {
+                group
+            }
+        val signal =
+            Signal(
+                id = UUID.randomUUID().toString(),
+                name = "${objectType.shortLabel} $address",
+                address = address,
+                dataType = dataType,
+                writable = objectType == ObjectType.COIL || objectType == ObjectType.HOLDING_REGISTER,
+            )
+        val updatedGroup = expanded.copy(signals = expanded.signals + signal)
+        val groups =
+            if (profile.groups.any { it.id == group.id }) {
+                profile.groups.map { if (it.id == group.id) updatedGroup else it }
+            } else {
+                profile.groups + updatedGroup
+            }
+        upsertProfile(profile.copy(groups = groups))
+        _report.value = ImportReport("Added ${signal.name} to ${updatedGroup.name}")
+    }
+
+    // ------------------------------------------------------------------ link
+
+    fun updateSerialSettings(settings: SerialSettings) {
+        updateLinkSettings(_linkSettings.value.copy(serial = settings))
+    }
+
+    fun updateModbusSettings(
+        timeoutMs: Int? = null,
+        retries: Int? = null,
+        interFrameDelayMs: Int? = null,
+        framer: Framer? = null,
+        autoReconnect: Boolean? = null,
+        autoDisableAfterFailures: Boolean? = null,
+    ) {
+        val current = _linkSettings.value
+        updateLinkSettings(
+            current.copy(
+                timeoutMs = timeoutMs?.coerceIn(100, 30_000) ?: current.timeoutMs,
+                retries = retries?.coerceIn(0, 5) ?: current.retries,
+                interFrameDelayMs = interFrameDelayMs?.coerceIn(0, 500) ?: current.interFrameDelayMs,
+                framer = framer ?: current.framer,
+                autoReconnect = autoReconnect ?: current.autoReconnect,
+                autoDisableAfterFailures = autoDisableAfterFailures ?: current.autoDisableAfterFailures,
+            ),
+        )
+    }
+
+    private fun updateLinkSettings(settings: LinkSettings) {
+        _linkSettings.value = settings
+        persist()
+    }
+
+    fun refreshDevices() = usb.refresh()
+
+    fun connectUsb(info: UsbSerialDeviceInfo) {
+        if (_link.value.connected || _link.value.connecting) disconnect()
+        viewModelScope.launch {
+            _link.value =
+                _link.value.copy(
+                    connecting = true,
+                    connected = false,
+                    lastError = null,
+                    selectedDeviceKey = info.key,
+                )
+            if (!info.supported) {
+                _link.value = _link.value.copy(connecting = false, lastError = "No USB serial driver for this device")
+                return@launch
+            }
+            val granted = withTimeoutOrNull(20_000) { usb.ensurePermission(info.device) } == true
+            if (!granted) {
+                _link.value = _link.value.copy(connecting = false, lastError = "USB permission denied")
+                return@launch
+            }
+            val newTransport =
+                try {
+                    withContext(Dispatchers.IO) {
+                        usb.openTransport(info, _linkSettings.value.serial).also { it.open() }
+                    }
+                } catch (failure: Exception) {
+                    _link.value =
+                        _link.value.copy(connecting = false, lastError = failure.message ?: "Cannot open USB serial port")
+                    return@launch
+                }
+            lastTarget = ConnectionTarget.Usb(info)
+            attachTransport(newTransport, TransportKind.USB, info.displayName)
+        }
+    }
+
+    fun connectDemo() {
+        if (_link.value.connected || _link.value.connecting) disconnect()
+        val newTransport =
+            SimulatedTransport(
+                framer = _linkSettings.value.framer,
+                unitIds = setOf(1, 2, 3),
+            )
+        lastTarget = ConnectionTarget.Simulator
+        attachTransport(newTransport, TransportKind.SIMULATOR, "Built-in simulator")
+    }
+
+    private fun attachTransport(
+        newTransport: SerialTransport,
+        kind: TransportKind,
+        label: String,
+    ) {
+        val profile = _activeProfile.value
+        if (profile == null) {
+            _link.value = _link.value.copy(connecting = false, lastError = "Create or select a device profile first")
+            runCatching { newTransport.close() }
+            return
+        }
+        try {
+            if (!newTransport.isOpen) newTransport.open()
+        } catch (failure: Exception) {
+            _link.value = _link.value.copy(connecting = false, lastError = failure.message ?: "Cannot open link")
+            return
+        }
+        transport = newTransport
+        val master =
+            ModbusMaster(
+                transport = newTransport,
+                framer = _linkSettings.value.framer,
+                defaultUnitId = profile.unitId,
+                defaultTimeoutMs = _linkSettings.value.timeoutMs,
+                defaultRetries = _linkSettings.value.retries,
+                interFrameDelayMs = _linkSettings.value.interFrameDelayMs.toLong(),
+                recorder = trafficRecorder,
+            )
+        this.master = master
+        val engine =
+            PollEngine(
+                master = master,
+                initialProfile = profile,
+                autoDisableAfterFailures = _linkSettings.value.autoDisableAfterFailures,
+                onTransportFailure = { failure -> viewModelScope.launch { onTransportLost(failure) } },
+            )
+        this.engine = engine
+        pollCollector?.cancel()
+        pollCollector =
+            viewModelScope.launch {
+                engine.state.collect { snapshot -> _poll.value = snapshot }
+            }
+        engine.start()
+        _link.value =
+            _link.value.copy(
+                kind = kind,
+                connected = true,
+                connecting = false,
+                polling = true,
+                label = label,
+                lastError = null,
+            )
+        val key = if (kind == TransportKind.USB) _link.value.selectedDeviceKey else _linkSettings.value.lastDeviceKey
+        updateLinkSettings(_linkSettings.value.copy(lastDeviceKey = key))
+    }
+
+    fun disconnect() {
+        pollCollector?.cancel()
+        pollCollector = null
+        engine?.shutdown()
+        engine = null
+        runCatching { transport?.close() }
+        transport = null
+        master = null
+        lastTarget = null
+        _poll.value = _poll.value.copy(running = false)
+        _link.value =
+            LinkUiState(
+                kind = TransportKind.NONE,
+                selectedDeviceKey = _link.value.selectedDeviceKey,
+            )
+    }
+
+    private suspend fun onTransportLost(failure: Throwable) {
+        if (!_link.value.connected) return
+        val target = lastTarget
+        _link.value =
+            _link.value.copy(
+                connected = false,
+                polling = false,
+                lastError = "Link lost: ${failure.message}",
+            )
+        pollCollector?.cancel()
+        pollCollector = null
+        engine?.shutdown()
+        engine = null
+        runCatching { transport?.close() }
+        transport = null
+        master = null
+        if (_linkSettings.value.autoReconnect && target != null) {
+            delay(1500)
+            when (target) {
+                is ConnectionTarget.Usb -> connectUsb(target.info)
+                ConnectionTarget.Simulator -> connectDemo()
+            }
+        }
+    }
+
+    fun togglePolling() {
+        val engine =
+            engine ?: run {
+                _link.value = _link.value.copy(lastError = "Not connected")
+                return
+            }
+        if (_link.value.polling) {
+            engine.pause()
+            _link.value = _link.value.copy(polling = false)
+        } else {
+            engine.resume()
+            _link.value = _link.value.copy(polling = true)
+        }
+    }
+
+    fun readOnce() {
+        val engine =
+            engine ?: run {
+                _link.value = _link.value.copy(lastError = "Not connected")
+                return
+            }
+        viewModelScope.launch {
+            try {
+                engine.pollOnce()
+            } catch (failure: Exception) {
+                _link.value = _link.value.copy(lastError = failure.message)
+            }
+        }
+    }
+
+    fun resetAutoDisabled(groupId: String) {
+        engine?.resetAutoDisabled(groupId)
+    }
+
+    suspend fun writeSignal(
+        groupId: String,
+        signalId: String,
+        value: String,
+    ): Result<Unit> = engine?.writeSignal(groupId, signalId, value) ?: Result.failure(ModbusException("Not connected"))
+
+    suspend fun writeCoilBit(
+        groupId: String,
+        signalId: String,
+        bitIndex: Int,
+        on: Boolean,
+    ): Result<Unit> = engine?.writeCoilBit(groupId, signalId, bitIndex, on) ?: Result.failure(ModbusException("Not connected"))
+
+    // --------------------------------------------------------------- scanners
+
+    fun cancelScan() {
+        scanJob?.cancel()
+        _scan.value = _scan.value.copy(running = false)
+    }
+
+    fun cancelRegisterScan() {
+        registerScanJob?.cancel()
+        _registerScan.value = _registerScan.value.copy(running = false)
+    }
+
+    fun scanUnits(
+        startUnit: Int,
+        endUnit: Int,
+        function: Int,
+        address: Int,
+        quantity: Int,
+        timeoutMs: Int,
+    ) {
+        val master =
+            master ?: run {
+                _scan.value = ScanUiState(error = "Connect to a device first")
+                return
+            }
+        val from = startUnit.coerceIn(1, 247)
+        val to = endUnit.coerceIn(from, 247)
+        scanJob?.cancel()
+        scanJob =
+            viewModelScope.launch(Dispatchers.IO) {
+                _scan.value = ScanUiState(running = true, label = "Probing units $from..$to")
+                val hits = mutableListOf<UnitProbe>()
+                val total = (to - from + 1).coerceAtLeast(1)
+                for (unit in from..to) {
+                    try {
+                        val started = System.nanoTime()
+                        val result =
+                            master.read(
+                                function = function,
+                                address = address,
+                                quantity = quantity.coerceIn(1, 125),
+                                unitId = unit,
+                                timeoutMs = timeoutMs.coerceIn(50, 10_000),
+                                retries = 0,
+                                kind = ExchangeKind.SCAN,
+                            )
+                        val latency = (System.nanoTime() - started) / 1_000_000
+                        val sample =
+                            result.registers?.take(2)?.joinToString("/")
+                                ?: result.bits?.take(16)?.joinToString("") { if (it) "1" else "0" }
+                                ?: ""
+                        hits += UnitProbe(unit, latency, sample)
+                        _scan.value =
+                            ScanUiState(
+                                running = true,
+                                progress = (unit - from + 1f) / total,
+                                label = "Probing unit $unit",
+                                hits = hits.toList(),
+                            )
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        _scan.value =
+                            ScanUiState(
+                                running = true,
+                                progress = (unit - from + 1f) / total,
+                                label = "Probing unit $unit",
+                                hits = hits.toList(),
+                            )
+                    }
+                }
+                _scan.value =
+                    ScanUiState(
+                        running = false,
+                        progress = 1f,
+                        label = "Found ${hits.size} device(s)",
+                        hits = hits.toList(),
+                    )
+            }
+    }
+
+    fun scanRegisters(
+        objectType: ObjectType,
+        start: Int,
+        count: Int,
+    ) {
+        val master =
+            master ?: run {
+                _registerScan.value = RegisterScanState(error = "Connect to a device first")
+                return
+            }
+        val safeStart = start.coerceIn(0, 65535)
+        val safeCount = count.coerceIn(1, minOf(4096, 65536 - safeStart))
+        registerScanJob?.cancel()
+        registerScanJob =
+            viewModelScope.launch(Dispatchers.IO) {
+                _registerScan.value =
+                    RegisterScanState(
+                        running = true,
+                        objectType = objectType,
+                        start = safeStart,
+                        count = safeCount,
+                    )
+                val cells = mutableListOf<RegisterCell>()
+                var offset = 0
+                while (offset < safeCount) {
+                    val blockSize = minOf(32, safeCount - offset)
+                    val address = safeStart + offset
+                    try {
+                        if (objectType.isBitTable) {
+                            val result =
+                                master.read(
+                                    if (objectType == ObjectType.COIL) 1 else 2,
+                                    address,
+                                    blockSize,
+                                    retries = 0,
+                                    kind = ExchangeKind.SCAN,
+                                )
+                            val bits = result.bits ?: BooleanArray(0)
+                            for (index in 0 until blockSize) {
+                                cells += RegisterCell(address + index, if (bits.getOrNull(index) == true) 1 else 0)
+                            }
+                        } else {
+                            val result =
+                                master.read(
+                                    if (objectType == ObjectType.INPUT_REGISTER) 4 else 3,
+                                    address,
+                                    blockSize,
+                                    retries = 0,
+                                    kind = ExchangeKind.SCAN,
+                                )
+                            val registers = result.registers ?: IntArray(0)
+                            for (index in 0 until blockSize) {
+                                cells += RegisterCell(address + index, registers.getOrNull(index) ?: 0)
+                            }
+                        }
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (failure: Exception) {
+                        for (index in 0 until blockSize) {
+                            cells += RegisterCell(address + index, null, failure.message ?: "Read failed")
+                        }
+                    }
+                    offset += blockSize
+                    _registerScan.value =
+                        RegisterScanState(
+                            running = true,
+                            progress = offset.toFloat() / safeCount,
+                            objectType = objectType,
+                            start = safeStart,
+                            count = safeCount,
+                            cells = cells.toList(),
+                        )
+                }
+                _registerScan.value =
+                    RegisterScanState(
+                        running = false,
+                        progress = 1f,
+                        objectType = objectType,
+                        start = safeStart,
+                        count = safeCount,
+                        cells = cells.toList(),
+                    )
+            }
+    }
+
+    // -------------------------------------------------------------------- raw
+
+    fun sendRaw(
+        unitId: Int,
+        pduHex: String,
+        timeoutMs: Int,
+    ) {
+        val master =
+            master ?: run {
+                _raw.value = RawState(error = "Connect to a device first")
+                return
+            }
+        val pdu = parseHex(pduHex)
+        if (pdu == null || pdu.isEmpty()) {
+            _raw.value = RawState(error = "Invalid PDU hex")
+            return
+        }
+        viewModelScope.launch {
+            _raw.value = RawState(sending = true)
+            try {
+                val result = master.rawRequest(pdu, unitId.coerceIn(0, 247), timeoutMs.coerceIn(50, 30_000), retries = 0)
+                _raw.value =
+                    RawState(
+                        sending = false,
+                        requestHex = result.request.toHex(),
+                        responseHex = result.responseRaw.toHex(),
+                        durationMs = result.durationMs,
+                        attempts = result.attempts,
+                        decoded = describeResponse(result.response),
+                    )
+            } catch (failure: Exception) {
+                _raw.value =
+                    RawState(
+                        sending = false,
+                        requestHex = "",
+                        responseHex = "",
+                        error = failure.message ?: "Request failed",
+                    )
+            }
+        }
+    }
+
+    private fun describeResponse(response: ModbusResponse): String {
+        val function = response.function
+        val payload = response.payload
+        return when (function) {
+            1, 2 -> {
+                val byteCount = payload.firstOrNull()?.toInt()?.and(0xFF) ?: 0
+                val bits = response.bits(byteCount * 8)
+                "byteCount=$byteCount  bits=${bits.joinToString("") { if (it) "1" else "0" }}"
+            }
+
+            3, 4 -> {
+                val byteCount = payload.firstOrNull()?.toInt()?.and(0xFF) ?: 0
+                val regs = response.registers(byteCount / 2)
+                "byteCount=$byteCount  regs=${regs.joinToString(" ") { "%04X".format(it) }}"
+            }
+
+            5, 6, 15, 16 -> {
+                "echo=${payload.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }}"
+            }
+
+            else -> {
+                payload.joinToString(" ") { "%02X".format(it.toInt() and 0xFF) }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------- import/export
+
+    fun importCsvText(text: String) {
+        val result: CsvImportResult = ModpollCsv.import(text)
+        if (result.profiles.isEmpty()) {
+            _report.value = ImportReport("CSV import failed", result.warnings)
+            return
+        }
+        appendImported(result.profiles)
+        _report.value =
+            ImportReport(
+                "Imported ${result.profiles.size} device profile(s)",
+                result.warnings,
+            )
+    }
+
+    fun importJsonText(text: String) {
+        try {
+            val imported = store.importJson(text)
+            if (imported.isEmpty()) {
+                _report.value = ImportReport("JSON import failed", listOf("No profiles found"))
+                return
+            }
+            appendImported(imported)
+            _report.value = ImportReport("Imported ${imported.size} profile(s)")
+        } catch (failure: Exception) {
+            _report.value = ImportReport("JSON import failed", listOf(failure.message ?: "Invalid JSON"))
+        }
+    }
+
+    fun importCsvFromUri(uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val text = readUri(uri)
+                withContext(Dispatchers.Main) { importCsvText(text) }
+            } catch (failure: Exception) {
+                _report.value = ImportReport("CSV import failed", listOf(failure.message ?: "Cannot read file"))
+            }
+        }
+    }
+
+    fun importJsonFromUri(uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val text = readUri(uri)
+                withContext(Dispatchers.Main) { importJsonText(text) }
+            } catch (failure: Exception) {
+                _report.value = ImportReport("JSON import failed", listOf(failure.message ?: "Cannot read file"))
+            }
+        }
+    }
+
+    private fun appendImported(profiles: List<DeviceProfile>) {
+        val existingNames = _profiles.value.map { it.name }.toMutableSet()
+        val additions =
+            profiles.map { incoming ->
+                var name = incoming.name.ifBlank { "Imported device" }
+                while (!existingNames.add(name)) name = "$name (2)"
+                incoming
+                    .copy(
+                        id = UUID.randomUUID().toString(),
+                        name = name,
+                        builtIn = false,
+                    ).ensureIds()
+            }
+        _profiles.value = _profiles.value + additions
+        if (_activeProfile.value == null) {
+            _activeProfileId.value = additions.first().id
+            _activeProfile.value = additions.first()
+        }
+        persist()
+    }
+
+    fun exportProfilesJson(uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val text = store.exportJson(_profiles.value)
+                writeUri(uri, text)
+                withContext(Dispatchers.Main) { _report.value = ImportReport("Exported profiles") }
+            } catch (failure: Exception) {
+                withContext(Dispatchers.Main) {
+                    _report.value = ImportReport("Export failed", listOf(failure.message ?: "Cannot write file"))
+                }
+            }
+        }
+    }
+
+    fun exportProfileCsv(
+        uri: Uri,
+        profileId: String,
+    ) {
+        val profile = _profiles.value.firstOrNull { it.id == profileId } ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val (csv, warnings) = ModpollCsv.export(profile)
+                writeUri(uri, csv)
+                withContext(Dispatchers.Main) {
+                    _report.value = ImportReport("Exported ${profile.name} as modpoll CSV", warnings)
+                }
+            } catch (failure: Exception) {
+                withContext(Dispatchers.Main) {
+                    _report.value = ImportReport("Export failed", listOf(failure.message ?: "Cannot write file"))
+                }
+            }
+        }
+    }
+
+    fun exportSnapshot(uri: Uri) {
+        val profile = _activeProfile.value ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val values = _poll.value.values
+                val payload =
+                    buildJsonObject {
+                        put(
+                            profile.name,
+                            buildJsonObject {
+                                profile.groups.forEach { group ->
+                                    group.signals.forEach { signal ->
+                                        val reading: SignalReading? = values[signal.id]
+                                        val value = reading?.measurement?.numeric
+                                        if (value != null) {
+                                            put(signal.name, value)
+                                        } else {
+                                            put(signal.name, reading?.measurement?.formatted ?: "—")
+                                        }
+                                    }
+                                }
+                                put("timestamp", System.currentTimeMillis() / 1000)
+                            },
+                        )
+                    }
+                writeUri(
+                    uri,
+                    json.encodeToString(
+                        kotlinx.serialization.json.JsonObject
+                            .serializer(),
+                        payload,
+                    ),
+                )
+                withContext(Dispatchers.Main) { _report.value = ImportReport("Snapshot exported") }
+            } catch (failure: Exception) {
+                withContext(Dispatchers.Main) {
+                    _report.value = ImportReport("Export failed", listOf(failure.message ?: "Cannot write file"))
+                }
+            }
+        }
+    }
+
+    fun exportTrafficCsv(uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val builder = StringBuilder()
+                builder.appendLine("time,kind,framer,unit,function,attempt,duration_ms,ok,request,response,error")
+                trafficRecorder.snapshot().forEach { entry ->
+                    builder.appendLine(
+                        listOf(
+                            entry.timeMs.toString(),
+                            entry.kind.label,
+                            entry.framer.label,
+                            entry.unitId.toString(),
+                            entry.function.toString(),
+                            entry.attempt.toString(),
+                            entry.durationMs.toString(),
+                            entry.ok.toString(),
+                            entry.request.toHex(" "),
+                            entry.response?.toHex(" ").orEmpty(),
+                            (entry.error ?: "").replace(',', ';'),
+                        ).joinToString(","),
+                    )
+                }
+                writeUri(uri, builder.toString())
+                withContext(Dispatchers.Main) { _report.value = ImportReport("Traffic log exported") }
+            } catch (failure: Exception) {
+                withContext(Dispatchers.Main) {
+                    _report.value = ImportReport("Export failed", listOf(failure.message ?: "Cannot write file"))
+                }
+            }
+        }
+    }
+
+    fun clearTraffic() = trafficRecorder.clear()
+
+    fun clearReport() {
+        _report.value = null
+    }
+
+    private fun readUri(uri: Uri): String =
+        getApplication<Application>().contentResolver.openInputStream(uri)?.use {
+            it.readBytes().toString(Charsets.UTF_8)
+        } ?: throw IllegalStateException("Cannot open file")
+
+    private fun writeUri(
+        uri: Uri,
+        text: String,
+    ) {
+        getApplication<Application>().contentResolver.openOutputStream(uri, "wt")?.use {
+            it.write(text.toByteArray(Charsets.UTF_8))
+        } ?: throw IllegalStateException("Cannot open file")
+    }
+
+    private fun parseHex(input: String): ByteArray? {
+        val clean = input.replace(Regex("[^0-9A-Fa-f]"), "")
+        if (clean.length % 2 != 0) return null
+        return try {
+            ByteArray(clean.length / 2) { index ->
+                clean.substring(index * 2, index * 2 + 2).toInt(16).toByte()
+            }
+        } catch (_: NumberFormatException) {
+            null
+        }
+    }
+
+    private fun persist() {
+        val state =
+            ProfilesFile(
+                activeProfileId = _activeProfileId.value,
+                profiles = _profiles.value,
+                link = _linkSettings.value,
+            )
+        runCatching { store.save(state) }
+            .onFailure { _link.value = _link.value.copy(lastError = "Cannot save profiles: ${it.message}") }
+    }
+
+    override fun onCleared() {
+        pollCollector?.cancel()
+        engine?.shutdown()
+        runCatching { transport?.close() }
+        super.onCleared()
+    }
+
+    private sealed interface ConnectionTarget {
+        data class Usb(
+            val info: UsbSerialDeviceInfo,
+        ) : ConnectionTarget
+
+        data object Simulator : ConnectionTarget
+    }
+}

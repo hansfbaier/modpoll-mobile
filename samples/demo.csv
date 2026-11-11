@@ -1,0 +1,27 @@
+# modpoll-compatible example for ModPoll RTU
+# device,<name>,<unit id>,,
+device,demo,1,,
+# poll,<object type>,<start>,<count>,<byte order_word order>
+poll,coil,0,16,BE_BE
+ref,relay_bank_a,0,bool8,rw
+ref,relay_bank_b,1,bool8,rw
+poll,discrete_input,0,16,BE_BE
+ref,input_bank_a,0,bool8,r
+ref,input_bank_b,1,bool8,r
+poll,input_register,0,14,BE_BE
+ref,voltage,0,float32,r,V
+ref,current,2,float32,r,A
+ref,active_power,4,float32,r,W
+ref,line_frequency,6,float32,r,Hz
+ref,energy,8,float32,r,kWh
+ref,status_word,10,uint16,r
+ref,temperature,12,float32,r,C
+poll,holding_register,0,24,BE_BE
+ref,control_mode,0,uint16,rw
+ref,speed_setpoint,1,uint16,rw,rpm
+ref,temperature_setpoint,2,float32,rw,C
+ref,batch_counter,4,uint32,rw
+ref,trim_offset,6,float32,rw,%,0.1
+ref,pump_id,10,string7,rw
+ref,recipe_1,20,uint16,rw
+ref,recipe_2,21,uint16,rw

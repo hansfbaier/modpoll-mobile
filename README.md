@@ -1,0 +1,166 @@
+# ModPoll RTU
+
+A Modbus **RTU / ASCII** master for Android, driven over USB serial. It follows the configuration
+model of [top-maker/modpoll](https://github.com/top-maker/modpoll) (device / poll / ref CSV) but
+replaces the command line with a touch-first workspace for commissioning and troubleshooting:
+grouped live values, trends, register maps, slave-id scans, a raw frame tool and a byte-level log.
+
+No MQTT, no gateway mode, no cloud dependency. The link is the USB cable.
+
+![Live monitor](docs/screenshots/01-live-monitor.png)
+
+## What it does
+
+### Serial link
+
+- USB host via [usb-serial-for-android](https://github.com/mik3y/usb-serial-for-android):
+  CH340/CH341, CP210x, FTDI, PL2303, CDC-ACM and related chips
+- Baud 1200…921600, data bits 5–8, parity none/even/odd, stop bits 1/2
+- Modbus RTU (binary + CRC16) **and** Modbus ASCII (hex + LRC + CRLF)
+- Per-request timeout, retries, inter-frame gap, configurable unit id
+- Optional auto-reconnect and auto-disable of a failing poll group after three failures
+  (the equivalent of `--autoremove`)
+- Hot-plug aware device picker; USB permission handled by the app
+
+### Modbus data model
+
+- FC01 coils, FC02 discrete inputs, FC03 holding registers, FC04 input registers
+- FC05/FC06 single writes, FC15/FC16 multiple writes
+- Types: `bool`, `bool8`, `bool16`, `uint16`, `int16`, `uint32`, `int32`, `uint64`, `int64`,
+  `float16`, `float32`, `float64`, `stringN`
+- Endianness `BE_BE`, `BE_LE`, `LE_BE`, `LE_LE`
+- Scale and offset, engineering units, decimal places
+- `address:bit` boolean references on register tables
+- Raw PDU tool for frames the UI does not model
+
+### Profiles
+
+- A profile is one slave: unit id, poll groups, signal mappings
+- Each group is one contiguous read block with its own interval, so a screen of values usually
+  costs one request per group
+- Visual editor for groups and signals, duplicate/delete, JSON import/export
+- modpoll CSV import and export
+- Built-in profiles: simulator demo, modsim address layout, Eastron SDM120M
+
+### Workspace
+
+- **Live** — grouped cards, live values, raw hex, per-signal sparkline, search and filters
+  (favorites / writable / changed / errors), write-capable detail sheet with decoded
+  interpretations and bit toggles
+- **Trends** — multi-signal chart up to six series, selectable window, freeze, min/avg/max
+- **Tools** — slave-id scan, 32-register block heatmap with “add to profile”, raw PDU builder
+- **Log** — every request/response with timing, CRC/LRC status, exception codes, CSV export
+- **Link** — device selection, serial and Modbus settings, framing, built-in simulator
+
+| Signal detail | Register map |
+|---|---|
+| ![Detail](docs/screenshots/02-signal-detail.png) | ![Heatmap](docs/screenshots/03-register-heatmap.png) |
+
+| Traffic log | Profiles |
+|---|---|
+| ![Log](docs/screenshots/04-traffic-log.png) | ![Profiles](docs/screenshots/05-profiles.png) |
+
+## Quick start without hardware
+
+1. Install and open the app.
+2. **Link → Start simulator**.
+3. Open **Live**. The built-in *Demo PLC* profile polls units 1–3 with live float, integer,
+   string, coil and discrete data.
+4. Tap a tile to inspect raw words, switch endianness interpretations, or write a value.
+5. Open **Tools → Register map** and read 32 holding registers.
+
+The simulator uses the same framing and function-code validation as a real device, including
+exception responses (illegal address), timeouts for missing unit ids and both RTU and ASCII
+framing. It is part of the test suite as well.
+
+## Build
+
+Requirements:
+
+- JDK 17
+- Android SDK platform 35 and build-tools 35.0.0
+- Gradle wrapper is included (Gradle 8.13)
+
+```bash
+# point Gradle at your SDK
+echo "sdk.dir=$HOME/android-sdk" > local.properties
+
+./gradlew :app:assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+Unit tests (CRC, framing, endianness, codecs, CSV, simulator integration):
+
+```bash
+./gradlew :app:testDebugUnitTest
+```
+
+## Using a USB-RS485 adapter
+
+1. Connect the adapter with a USB-OTG cable. The device must be a USB host or support OTG.
+2. Grant the USB permission prompt.
+3. Select the adapter in **Link**, choose baud rate / parity / stop bits.
+4. Choose **RTU** or **ASCII** framing.
+5. Select a profile (or import a CSV), set the unit id, then **Connect selected device**.
+
+For a two-wire RS-485 bus, A/B polarity and termination are still your responsibility. Many
+adapters switch the driver direction automatically; the app does not drive RTS as a TX-enable
+signal.
+
+## modpoll CSV compatibility
+
+The importer accepts the familiar format:
+
+```csv
+device,SDM120M,1,,,
+poll,input_register,0,2,BE_BE
+ref,voltage,0,float32,r,Volts
+```
+
+- Addresses are used **literally**, exactly as in modpoll (for example `40000`).
+- `bool8` / `bool16` on coil and discrete-input polls are packed 8- or 16-bit groups in the file.
+  Internally the app stores absolute bit addresses (`file address × 8`), and converts back on
+  export. A `bool` reference in a bit table is treated as an 8-bit group, like modpoll.
+- Register `bool` references should use `address:bit`. A missing bit produces an import warning and
+  defaults to bit 0.
+- `stringN` occupies `ceil(N / 2)` registers.
+- `scale` multiplies the raw value (the app also supports an optional offset in its own editor).
+- `rw` marks the signal writable.
+- Invalid rows are reported with line numbers; valid rows around them are kept.
+
+Not implemented from the CLI: MQTT publishing, TCP/UDP transports, remote URL configuration,
+multi-device simultaneous polling, daemon mode and Docker. One USB link and one active profile are
+polled at a time.
+
+## Architecture
+
+```text
+data/      profiles, signals, CSV import/export, JSON persistence
+modbus/    CRC16, RTU/ASCII framers, master, codecs, USB and simulated transports
+engine/    poll scheduler, per-signal history, writes
+usb/       USB host enumeration, permission flow, driver probing
+ui/        Compose Material 3 workspace (Live, Trends, Tools, Log, Link, Profiles)
+```
+
+The master serializes every transaction with a mutex (half-duplex bus), validates CRC/LRC and
+unit/function codes, retries transport-level failures, and records each attempt. The poll engine
+issues one request per group per interval and decodes all signals from that block.
+
+## Known limitations
+
+- Requires a USB host / OTG port. USB permission must be granted after each re-attach.
+- One link at a time. Multi-drop buses can be scanned, but polling is per profile/unit.
+- Numeric trend history is stored as `Double`; 64-bit integers above 2^53 lose precision in
+  charts. The detail sheet shows exact integer values.
+- The write path encodes using the signal's declared scale/offset; verify writes on a bench
+  device before using them in production.
+- Very long ASCII frames and unusual vendor timings may require a larger timeout.
+
+## Credits
+
+- Configuration model and semantics inspired by
+  [top-maker/modpoll](https://github.com/top-maker/modpoll) (MIT).
+- USB serial drivers by [mik3y/usb-serial-for-android](https://github.com/mik3y/usb-serial-for-android)
+  (MIT).
+
+ModPoll RTU is an independent project and is not affiliated with top-maker/modpoll.
