@@ -1,11 +1,11 @@
 # ModPoll Mobile
 
-A Modbus **RTU / ASCII** master for Android, driven over USB serial. It follows the configuration
+A Modbus **RTU / ASCII / TCP** master for Android, driven over USB serial or a TCP socket. It follows the configuration
 model of [top-maker/modpoll](https://github.com/top-maker/modpoll) (device / poll / ref CSV) but
 replaces the command line with a touch-first workspace for commissioning and troubleshooting:
 grouped live values, trends, register maps, slave-id scans, a raw frame tool and a byte-level log.
 
-No MQTT, no gateway mode, no cloud dependency. The link is the USB cable.
+No MQTT, no gateway mode, no cloud dependency. The link is a USB cable or a TCP socket.
 
 ![Live monitor](docs/screenshots/01-live-monitor.png)
 
@@ -21,6 +21,7 @@ No MQTT, no gateway mode, no cloud dependency. The link is the USB cable.
 - Optional auto-reconnect and auto-disable of a failing poll group after three failures
   (the equivalent of `--autoremove`)
 - Hot-plug aware device picker; USB permission handled by the app
+- **Modbus TCP** (MBAP) to a host and port, over Wi-Fi or Ethernet
 
 ### Modbus data model
 
@@ -111,6 +112,16 @@ Unit tests (CRC, framing, endianness, codecs, CSV, simulator integration):
 ./gradlew :app:testDebugUnitTest
 ```
 
+## Using Modbus TCP
+
+1. Activate a device profile.
+2. Open **Link → Modbus TCP**.
+3. Enter the host/IP and port (default 502), then **Connect TCP**.
+4. The active profile's unit id, groups and signals are polled over MBAP framing.
+
+The app requests the standard `INTERNET` permission for TCP sockets. It has no telemetry and no
+cloud service. TCP traffic is not encrypted; use it on a trusted control network or a VPN.
+
 ## Using a USB-RS485 adapter
 
 1. Connect the adapter with a USB-OTG cable. The device must be a USB host or support OTG.
@@ -144,15 +155,14 @@ ref,voltage,0,float32,r,Volts
 - `rw` marks the signal writable.
 - Invalid rows are reported with line numbers; valid rows around them are kept.
 
-Not implemented from the CLI: MQTT publishing, TCP/UDP transports, remote URL configuration,
-multi-device simultaneous polling, daemon mode and Docker. One USB link and one active profile are
-polled at a time.
+Not implemented: MQTT publishing, Modbus UDP, remote URL configuration, multi-device simultaneous
+polling, daemon mode and Docker. One link and one active profile are used at a time.
 
 ## Architecture
 
 ```text
 data/      profiles, signals, CSV import/export, JSON persistence
-modbus/    CRC16, RTU/ASCII framers, master, codecs, USB and simulated transports
+modbus/    CRC16, RTU/ASCII/MBAP framing, master, codecs, TCP/USB/simulated transports
 engine/    poll scheduler, per-signal history, writes
 usb/       USB host enumeration, permission flow, driver probing
 ui/        Compose Material 3 workspace (Live, Trends, Tools, Log, Link, Profiles)
@@ -164,7 +174,8 @@ issues one request per group per interval and decodes all signals from that bloc
 
 ## Known limitations
 
-- Requires a USB host / OTG port. USB permission must be granted after each re-attach.
+- USB requires a host/OTG port and permission after each re-attach. TCP requires the standard
+  `INTERNET` permission and a reachable host.
 - One link at a time. Multi-drop buses can be scanned, but polling is per profile/unit.
 - Numeric trend history is stored as `Double`; 64-bit integers above 2^53 lose precision in
   charts. The detail sheet shows exact integer values.
@@ -172,7 +183,7 @@ issues one request per group per interval and decodes all signals from that bloc
   device before using them in production.
 - Very long ASCII frames and unusual vendor timings may require a larger timeout.
 - The live scope is a holding-register viewer. While it runs, normal profile polling is paused;
-  the actual sample rate is limited by baud rate, device response time and USB latency.
+  the actual sample rate is limited by baud rate or network, device response time and transport latency.
 - Scope history is an in-memory ring buffer (3000 samples per series) and is not exported.
 
 ## License

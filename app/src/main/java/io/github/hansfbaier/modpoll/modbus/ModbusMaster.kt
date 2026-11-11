@@ -6,6 +6,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicInteger
 
 data class RawResult(
     val response: ModbusResponse,
@@ -38,10 +39,10 @@ data class WriteResult(
 )
 
 /**
- * Modbus master for one serial link.
+ * Modbus master for one link.
  *
- * A single mutex serializes requests, which is required for half-duplex RTU/ASCII buses.
- * Timeouts and retries can be overridden per call (used by the scanner and raw tool).
+ * Serial links use RTU or ASCII framing; a TCP link uses MBAP framing with a transaction id.
+ * A single mutex serializes requests, which is required for half-duplex serial buses.
  */
 class ModbusMaster(
     private val transport: SerialTransport,
@@ -53,6 +54,7 @@ class ModbusMaster(
     private val recorder: TrafficRecorder? = null,
 ) {
     private val mutex = Mutex()
+    private val transactionCounter = AtomicInteger(0)
 
     val transportLabel: String get() = transport.label
     val framing: Framer get() = framer
@@ -164,8 +166,8 @@ class ModbusMaster(
         retries: Int = defaultRetries,
         kind: ExchangeKind = ExchangeKind.WRITE,
     ): WriteResult {
-        val frame = ModbusFrame.writeSingleCoil(unitId, address, on)
-        val result = executeFrame(frame, 5, unitId, timeoutMs, retries, kind)
+        val pdu = pduOf(ModbusFrame.writeSingleCoil(unitId, address, on))
+        val result = execute(pdu, 5, unitId, timeoutMs, retries, kind)
         return WriteResult(result.durationMs, result.attempts)
     }
 
@@ -177,8 +179,8 @@ class ModbusMaster(
         retries: Int = defaultRetries,
         kind: ExchangeKind = ExchangeKind.WRITE,
     ): WriteResult {
-        val frame = ModbusFrame.writeSingleRegister(unitId, address, value)
-        val result = executeFrame(frame, 6, unitId, timeoutMs, retries, kind)
+        val pdu = pduOf(ModbusFrame.writeSingleRegister(unitId, address, value))
+        val result = execute(pdu, 6, unitId, timeoutMs, retries, kind)
         return WriteResult(result.durationMs, result.attempts)
     }
 
@@ -190,8 +192,8 @@ class ModbusMaster(
         retries: Int = defaultRetries,
         kind: ExchangeKind = ExchangeKind.WRITE,
     ): WriteResult {
-        val frame = ModbusFrame.writeMultipleCoils(unitId, address, values)
-        val result = executeFrame(frame, 15, unitId, timeoutMs, retries, kind)
+        val pdu = pduOf(ModbusFrame.writeMultipleCoils(unitId, address, values))
+        val result = execute(pdu, 15, unitId, timeoutMs, retries, kind)
         return WriteResult(result.durationMs, result.attempts)
     }
 
@@ -203,12 +205,12 @@ class ModbusMaster(
         retries: Int = defaultRetries,
         kind: ExchangeKind = ExchangeKind.WRITE,
     ): WriteResult {
-        val frame = ModbusFrame.writeMultipleRegisters(unitId, address, values)
-        val result = executeFrame(frame, 16, unitId, timeoutMs, retries, kind)
+        val pdu = pduOf(ModbusFrame.writeMultipleRegisters(unitId, address, values))
+        val result = execute(pdu, 16, unitId, timeoutMs, retries, kind)
         return WriteResult(result.durationMs, result.attempts)
     }
 
-    /** Send a raw PDU (function code + payload). CRC/LRC and framing are added here. */
+    /** Send a raw PDU (function code + payload). CRC, LRC or MBAP are added here. */
     suspend fun rawRequest(
         pdu: ByteArray,
         unitId: Int = defaultUnitId,
@@ -221,17 +223,19 @@ class ModbusMaster(
         return execute(pdu, function, unitId, timeoutMs, retries, kind)
     }
 
+    private fun encodeRequest(
+        pdu: ByteArray,
+        unitId: Int,
+    ): EncodedRequest =
+        if (framer == Framer.TCP) {
+            val transactionId = (transactionCounter.incrementAndGet() and 0xFFFF)
+            EncodedRequest(FramerCodec.encodeTcp(unitId, pdu, transactionId), transactionId)
+        } else {
+            EncodedRequest(FramerCodec.encode(framer, unitId, pdu), null)
+        }
+
     private suspend fun execute(
         pdu: ByteArray,
-        function: Int,
-        unitId: Int,
-        timeoutMs: Int,
-        retries: Int,
-        kind: ExchangeKind,
-    ): RawResult = executeFrame(FramerCodec.encode(framer, unitId, pdu), function, unitId, timeoutMs, retries, kind)
-
-    private suspend fun executeFrame(
-        requestFrame: ByteArray,
         function: Int,
         unitId: Int,
         timeoutMs: Int,
@@ -245,14 +249,26 @@ class ModbusMaster(
                 for (attempt in 1..attempts) {
                     val started = System.nanoTime()
                     var responseFrame: ByteArray? = null
+                    val encoded = encodeRequest(pdu, unitId)
+                    val requestFrame = encoded.bytes
                     try {
                         transport.purge()
                         if (interFrameDelayMs > 0) delay(interFrameDelayMs)
                         transport.write(requestFrame)
-                        val raw = receiveResponse(unitId, function, timeoutMs)
+                        val raw = receiveResponse(encoded.transactionId, timeoutMs)
                         responseFrame = raw
                         val elapsed = (System.nanoTime() - started) / 1_000_000L
-                        val response = FramerCodec.decodeResponse(framer, raw, unitId, function)
+                        val response =
+                            if (framer == Framer.TCP) {
+                                FramerCodec.decodeTcpResponse(
+                                    raw,
+                                    encoded.transactionId ?: -1,
+                                    unitId,
+                                    function,
+                                )
+                            } else {
+                                FramerCodec.decodeResponse(framer, raw, unitId, function)
+                            }
                         recorder?.record(
                             FrameExchange(
                                 id = recorder.nextId(),
@@ -293,8 +309,16 @@ class ModbusMaster(
                         val elapsed = (System.nanoTime() - started) / 1_000_000L
                         val error =
                             when (failure) {
-                                is ModbusException -> failure
-                                else -> ModbusException("Serial error: ${failure.message ?: failure.javaClass.simpleName}", failure)
+                                is ModbusException -> {
+                                    failure
+                                }
+
+                                else -> {
+                                    ModbusException(
+                                        "Transport error: ${failure.message ?: failure.javaClass.simpleName}",
+                                        failure,
+                                    )
+                                }
                             }
                         recorder?.record(
                             FrameExchange(
@@ -321,8 +345,7 @@ class ModbusMaster(
         }
 
     private fun receiveResponse(
-        unitId: Int,
-        function: Int,
+        transactionId: Int?,
         timeoutMs: Int,
     ): ByteArray {
         val deadline = System.nanoTime() + timeoutMs * 1_000_000L
@@ -331,7 +354,7 @@ class ModbusMaster(
                 val header = transport.readExact(3, timeoutMs.toLong())
                 val responseFunction = header[1].toInt() and 0xFF
                 val third = header[2].toInt() and 0xFF
-                val total = ModbusResponseParser.expectedTotalLength(unitId, responseFunction, third)
+                val total = ModbusResponseParser.expectedTotalLength(header[0].toInt() and 0xFF, responseFunction, third)
                 if (total < 3) throw ModbusProtocolException("Invalid response length $total")
                 if (total > 3) {
                     val remaining = ((deadline - System.nanoTime()) / 1_000_000L).coerceAtLeast(1)
@@ -345,8 +368,30 @@ class ModbusMaster(
             Framer.ASCII -> {
                 transport.readUntil(FramerCodec.ASCII_LF, FramerCodec.MAX_ASCII_FRAME, timeoutMs.toLong())
             }
+
+            Framer.TCP -> {
+                val header = transport.readExact(7, timeoutMs.toLong())
+                val length = ((header[4].toInt() and 0xFF) shl 8) or (header[5].toInt() and 0xFF)
+                if (length < 2 || length > 254) {
+                    throw ModbusProtocolException("Invalid MBAP length $length")
+                }
+                val remaining = ((deadline - System.nanoTime()) / 1_000_000L).coerceAtLeast(1)
+                val body = transport.readExact(length - 1, remaining)
+                header + body
+            }
         }
     }
+
+    /** Removes unit id and CRC from a serial request frame, leaving the PDU. */
+    private fun pduOf(frame: ByteArray): ByteArray {
+        if (frame.size < 4) throw ModbusProtocolException("Request frame too short")
+        return frame.copyOfRange(1, frame.size - 2)
+    }
+
+    private data class EncodedRequest(
+        val bytes: ByteArray,
+        val transactionId: Int?,
+    )
 
     companion object {
         private const val RETRY_DELAY_MS = 40L

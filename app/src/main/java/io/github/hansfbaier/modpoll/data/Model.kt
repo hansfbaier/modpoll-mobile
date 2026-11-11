@@ -115,6 +115,7 @@ enum class Framer(
 ) {
     RTU("RTU"),
     ASCII("ASCII"),
+    TCP("TCP"),
 }
 
 @Serializable
@@ -135,6 +136,8 @@ data class LinkSettings(
     val autoReconnect: Boolean = false,
     val autoDisableAfterFailures: Boolean = false,
     val framer: Framer = Framer.RTU,
+    val tcpHost: String = "192.168.1.10",
+    val tcpPort: Int = 502,
     val lastDeviceKey: String = "",
 )
 

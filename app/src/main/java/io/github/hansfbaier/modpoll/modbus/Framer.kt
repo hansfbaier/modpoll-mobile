@@ -21,7 +21,27 @@ object FramerCodec {
         when (framer) {
             Framer.RTU -> ModbusFrame.request(unitId, pdu)
             Framer.ASCII -> encodeAscii(unitId, pdu)
+            Framer.TCP -> encodeTcp(unitId, pdu, 0)
         }
+
+    fun encodeTcp(
+        unitId: Int,
+        pdu: ByteArray,
+        transactionId: Int,
+    ): ByteArray {
+        require(unitId in 0..255) { "Unit id out of range: $unitId" }
+        val length = pdu.size + 1
+        val frame = ByteArray(7 + pdu.size)
+        frame[0] = (transactionId ushr 8).toByte()
+        frame[1] = transactionId.toByte()
+        frame[2] = 0
+        frame[3] = 0
+        frame[4] = (length ushr 8).toByte()
+        frame[5] = length.toByte()
+        frame[6] = unitId.toByte()
+        pdu.copyInto(frame, 7)
+        return frame
+    }
 
     fun encodeAscii(
         unitId: Int,
@@ -58,7 +78,49 @@ object FramerCodec {
         when (framer) {
             Framer.RTU -> ModbusResponseParser.parse(raw, expectedUnitId, expectedFunction)
             Framer.ASCII -> decodeAsciiResponse(raw, expectedUnitId, expectedFunction)
+            Framer.TCP -> throw ModbusProtocolException("Use decodeTcpResponse for TCP framing")
         }
+
+    fun decodeTcpResponse(
+        raw: ByteArray,
+        expectedTransactionId: Int,
+        expectedUnitId: Int,
+        expectedFunction: Int,
+    ): ModbusResponse {
+        if (raw.size < 9) throw ModbusProtocolException("MBAP frame too short: ${raw.size} bytes")
+        val transactionId = ((raw[0].toInt() and 0xFF) shl 8) or (raw[1].toInt() and 0xFF)
+        val protocol = ((raw[2].toInt() and 0xFF) shl 8) or (raw[3].toInt() and 0xFF)
+        val length = ((raw[4].toInt() and 0xFF) shl 8) or (raw[5].toInt() and 0xFF)
+        val unitId = raw[6].toInt() and 0xFF
+        if (protocol != 0) throw ModbusProtocolException("Unexpected MBAP protocol id $protocol")
+        if (transactionId != expectedTransactionId) {
+            throw ModbusProtocolException(
+                "Unexpected MBAP transaction $transactionId (expected $expectedTransactionId)",
+            )
+        }
+        if (length < 2 || raw.size != 6 + length) {
+            throw ModbusProtocolException("Invalid MBAP length $length for ${raw.size} bytes")
+        }
+        if (unitId != expectedUnitId) {
+            throw ModbusProtocolException("Unexpected unit id $unitId (expected $expectedUnitId)")
+        }
+        val function = raw[7].toInt() and 0xFF
+        if (function and 0x80 != 0) {
+            if (raw.size < 9) throw ModbusProtocolException("Short exception frame")
+            throw ModbusDeviceException(function and 0x7F, raw[8].toInt() and 0xFF)
+        }
+        if (function != expectedFunction) {
+            throw ModbusProtocolException(
+                "Unexpected function 0x%02X (expected 0x%02X)".format(function, expectedFunction),
+            )
+        }
+        return ModbusResponse(
+            unitId = unitId,
+            function = function,
+            payload = raw.copyOfRange(8, raw.size),
+            raw = raw,
+        )
+    }
 
     private fun decodeAsciiResponse(
         raw: ByteArray,
@@ -147,6 +209,8 @@ object FramerCodec {
                         }
                     }
                 }
+
+                Framer.TCP -> null
             }
         } catch (_: RuntimeException) {
             null

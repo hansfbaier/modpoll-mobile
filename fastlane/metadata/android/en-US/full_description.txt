@@ -6,6 +6,7 @@ Features:
 
 * USB serial support for CH340/CH341, CP210x, FTDI, PL2303 and CDC-ACM adapters
 * Modbus RTU (CRC16) and Modbus ASCII (LRC) framing
+* Modbus TCP (MBAP) over Wi-Fi or Ethernet
 * Coils, discrete inputs, holding registers and input registers
 * Read and write support for the common Modbus function codes
 * Data types: bool, bool8, bool16, uint16, int16, uint32, int32, uint64, int64,
@@ -22,7 +23,8 @@ Features:
 * Byte-level traffic log with timing and exception decoding
 * Built-in Modbus simulator for testing without hardware
 
-USB host support or a USB-OTG adapter is required for a physical device. The app
-has no network permission and does not collect telemetry.
+USB host support or a USB-OTG adapter is required for a physical serial device.
+TCP uses the standard INTERNET permission and connects only to the host you enter.
+The app does not collect telemetry.
 
 ModPoll Mobile is free software under the GNU General Public License v3.0 or later.

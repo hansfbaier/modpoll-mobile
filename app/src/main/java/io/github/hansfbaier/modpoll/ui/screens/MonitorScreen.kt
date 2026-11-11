@@ -51,6 +51,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.github.hansfbaier.modpoll.data.Framer
 import io.github.hansfbaier.modpoll.data.Signal
 import io.github.hansfbaier.modpoll.data.SignalGroup
 import io.github.hansfbaier.modpoll.engine.GroupState
@@ -58,6 +59,7 @@ import io.github.hansfbaier.modpoll.engine.PollSnapshot
 import io.github.hansfbaier.modpoll.engine.SignalReading
 import io.github.hansfbaier.modpoll.ui.AppViewModel
 import io.github.hansfbaier.modpoll.ui.LinkUiState
+import io.github.hansfbaier.modpoll.ui.TransportKind
 import io.github.hansfbaier.modpoll.ui.components.EmptyState
 import io.github.hansfbaier.modpoll.ui.components.ErrorText
 import io.github.hansfbaier.modpoll.ui.components.Led
@@ -124,7 +126,7 @@ fun MonitorScreen(
                 poll = poll,
                 profileName = profile?.name ?: "No profile",
                 unitId = profile?.unitId ?: 1,
-                framer = settings.framer.label,
+                framer = if (link.kind == TransportKind.TCP) "TCP" else settings.framer.label,
                 hasProfile = profile != null,
                 onConnect = onOpenLink,
                 onOpenProfiles = onOpenProfiles,
@@ -204,7 +206,7 @@ fun MonitorScreen(
             group = group,
             reading = reading,
             connected = link.connected,
-            framer = settings.framer,
+            framer = if (link.kind == TransportKind.TCP) Framer.TCP else settings.framer,
             onDismiss = { selectedKey = null },
             onFavorite = { vm.toggleFavorite(profile!!.id, group.id, signal.id) },
             onWrite = { text -> vm.writeSignal(group.id, signal.id, text) },

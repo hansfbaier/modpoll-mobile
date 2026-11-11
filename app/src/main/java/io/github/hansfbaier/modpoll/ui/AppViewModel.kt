@@ -30,6 +30,7 @@ import io.github.hansfbaier.modpoll.modbus.ModbusMaster
 import io.github.hansfbaier.modpoll.modbus.RawResponseDecoder
 import io.github.hansfbaier.modpoll.modbus.SerialTransport
 import io.github.hansfbaier.modpoll.modbus.SimulatedTransport
+import io.github.hansfbaier.modpoll.modbus.TcpTransport
 import io.github.hansfbaier.modpoll.modbus.toHex
 import io.github.hansfbaier.modpoll.usb.UsbSerialDeviceInfo
 import kotlinx.coroutines.CancellationException
@@ -51,6 +52,7 @@ enum class TransportKind {
     NONE,
     USB,
     SIMULATOR,
+    TCP,
 }
 
 data class LinkUiState(
@@ -505,6 +507,46 @@ class AppViewModel(
         }
     }
 
+    fun connectTcp(
+        host: String,
+        port: Int,
+    ) {
+        val address = host.trim()
+        if (address.isEmpty() || port !in 1..65535) {
+            _link.value = _link.value.copy(lastError = "Enter a TCP host and port (1-65535)")
+            return
+        }
+        if (_activeProfile.value == null) {
+            _link.value = _link.value.copy(lastError = "Activate a profile first (Profiles → Activate)")
+            return
+        }
+        if (_link.value.connected || _link.value.connecting) disconnect()
+        updateLinkSettings(_linkSettings.value.copy(tcpHost = address, tcpPort = port))
+        viewModelScope.launch {
+            _link.value = _link.value.copy(connecting = true, connected = false, lastError = null)
+            val newTransport =
+                try {
+                    withContext(Dispatchers.IO) {
+                        TcpTransport(address, port).also { it.open() }
+                    }
+                } catch (failure: Exception) {
+                    _link.value =
+                        _link.value.copy(
+                            connecting = false,
+                            lastError = failure.message ?: "Cannot connect to $address:$port",
+                        )
+                    return@launch
+                }
+            lastTarget = ConnectionTarget.Tcp(address, port)
+            attachTransport(
+                newTransport,
+                TransportKind.TCP,
+                "$address:$port",
+                Framer.TCP,
+            )
+        }
+    }
+
     fun connectDemo() {
         if (_link.value.connected || _link.value.connecting) disconnect()
         if (_activeProfile.value == null || _activeProfile.value?.signalCount == 0) {
@@ -517,7 +559,7 @@ class AppViewModel(
         }
         val newTransport =
             SimulatedTransport(
-                framer = _linkSettings.value.framer,
+                framer = if (_linkSettings.value.framer == Framer.TCP) Framer.RTU else _linkSettings.value.framer,
                 unitIds = setOf(1, 2, 3),
             )
         lastTarget = ConnectionTarget.Simulator
@@ -528,6 +570,7 @@ class AppViewModel(
         newTransport: SerialTransport,
         kind: TransportKind,
         label: String,
+        framing: Framer = _linkSettings.value.framer,
     ) {
         val profile = _activeProfile.value
         if (profile == null) {
@@ -545,7 +588,7 @@ class AppViewModel(
         val master =
             ModbusMaster(
                 transport = newTransport,
-                framer = _linkSettings.value.framer,
+                framer = framing,
                 defaultUnitId = profile.unitId,
                 defaultTimeoutMs = _linkSettings.value.timeoutMs,
                 defaultRetries = _linkSettings.value.retries,
@@ -563,8 +606,9 @@ class AppViewModel(
                 lastError = null,
             )
         startEngine(profile)
-        val key = if (kind == TransportKind.USB) _link.value.selectedDeviceKey else _linkSettings.value.lastDeviceKey
-        updateLinkSettings(_linkSettings.value.copy(lastDeviceKey = key))
+        if (kind == TransportKind.USB) {
+            updateLinkSettings(_linkSettings.value.copy(lastDeviceKey = _link.value.selectedDeviceKey))
+        }
     }
 
     fun disconnect() {
@@ -606,6 +650,7 @@ class AppViewModel(
             delay(1500)
             when (target) {
                 is ConnectionTarget.Usb -> connectUsb(target.info)
+                is ConnectionTarget.Tcp -> connectTcp(target.host, target.port)
                 ConnectionTarget.Simulator -> connectDemo()
             }
         }
@@ -1190,6 +1235,11 @@ class AppViewModel(
     private sealed interface ConnectionTarget {
         data class Usb(
             val info: UsbSerialDeviceInfo,
+        ) : ConnectionTarget
+
+        data class Tcp(
+            val host: String,
+            val port: Int,
         ) : ConnectionTarget
 
         data object Simulator : ConnectionTarget

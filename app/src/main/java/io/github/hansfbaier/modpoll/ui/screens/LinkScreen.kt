@@ -23,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.Devices
+import androidx.compose.material.icons.outlined.Lan
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Science
 import androidx.compose.material.icons.outlined.Usb
@@ -90,6 +91,8 @@ fun LinkScreen(
     val serial = settings.serial
     var baudExpanded by remember { mutableStateOf(false) }
     var profileExpanded by remember { mutableStateOf(false) }
+    var tcpHost by rememberSaveable(settings.tcpHost) { mutableStateOf(settings.tcpHost) }
+    var tcpPort by rememberSaveable(settings.tcpPort) { mutableStateOf(settings.tcpPort.toString()) }
     val baudOptions = listOf(1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600)
     var unitText by remember(activeProfile?.unitId) { mutableStateOf(activeProfile?.unitId?.toString() ?: "1") }
     var timeoutText by remember(settings.timeoutMs) { mutableStateOf(settings.timeoutMs.toString()) }
@@ -124,7 +127,7 @@ fun LinkScreen(
                         style = MaterialTheme.typography.titleMedium,
                     )
                     Text(
-                        if (link.connected) link.label else "USB serial or built-in simulator",
+                        if (link.connected) link.label else "USB serial, Modbus TCP or built-in simulator",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -137,8 +140,12 @@ fun LinkScreen(
             }
             if (link.connected) {
                 Spacer(Modifier.height(10.dp))
-                KeyValueRow("Framing", settings.framer.label)
-                KeyValueRow("Serial", "${serial.baudRate} ${serial.dataBits}${serial.parity.name.first()}${serial.stopBits}")
+                KeyValueRow("Framing", if (link.kind == TransportKind.TCP) "TCP" else settings.framer.label)
+                if (link.kind == TransportKind.TCP) {
+                    KeyValueRow("Endpoint", link.label)
+                } else {
+                    KeyValueRow("Serial", "${serial.baudRate} ${serial.dataBits}${serial.parity.name.first()}${serial.stopBits}")
+                }
                 KeyValueRow("Unit id", (activeProfile?.unitId ?: 0).toString())
                 KeyValueRow("Timeout", "${settings.timeoutMs} ms / ${settings.retries} retries")
                 Spacer(Modifier.height(8.dp))
@@ -149,6 +156,59 @@ fun LinkScreen(
             link.lastError?.let {
                 Spacer(Modifier.height(8.dp))
                 ErrorText(it)
+            }
+        }
+
+        SectionCard(accent = if (link.kind == TransportKind.TCP && link.connected) AccentLime else null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.Lan, null, modifier = Modifier.size(18.dp), tint = AccentCyan)
+                Spacer(Modifier.width(8.dp))
+                Text("Modbus TCP", style = MaterialTheme.typography.titleSmall)
+                Spacer(Modifier.weight(1f))
+                if (link.kind == TransportKind.TCP && link.connected) {
+                    StatusPill("CONNECTED", AccentLime, filled = true)
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Connect to a Modbus TCP server or gateway using MBAP framing. The active profile and unit id are used for polling.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = tcpHost,
+                    onValueChange = { tcpHost = it },
+                    label = { Text("Host / IP") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                    modifier = Modifier.weight(2f),
+                )
+                OutlinedTextField(
+                    value = tcpPort,
+                    onValueChange = { tcpPort = it.filter { ch -> ch.isDigit() }.take(5) },
+                    label = { Text("Port") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = { vm.connectTcp(tcpHost.trim(), tcpPort.toIntOrNull() ?: 502) },
+                enabled = activeProfile != null && tcpHost.isNotBlank() && !link.connecting,
+                shape = RoundedCornerShape(12.dp),
+            ) {
+                Icon(Icons.Outlined.Lan, null, Modifier.size(17.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    if (link.kind == TransportKind.TCP && link.connected) "Reconnect TCP" else "Connect TCP",
+                )
+            }
+            if (activeProfile == null) {
+                Spacer(Modifier.height(6.dp))
+                ErrorText("No active profile. Activate one in Profiles before connecting.")
             }
         }
 
@@ -234,7 +294,7 @@ fun LinkScreen(
         }
 
         SectionCard {
-            Text("Serial parameters", style = MaterialTheme.typography.titleSmall)
+            Text("USB serial parameters", style = MaterialTheme.typography.titleSmall)
             Spacer(Modifier.height(10.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Baud rate", style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(92.dp))
@@ -287,10 +347,12 @@ fun LinkScreen(
             )
             ParameterChips(
                 label = "Framing",
-                values = Framer.entries.map { it.label },
+                values = Framer.entries.filter { it != Framer.TCP }.map { it.label },
                 selected = settings.framer.label,
                 onSelect = { label ->
-                    vm.updateModbusSettings(framer = Framer.entries.firstOrNull { it.label == label } ?: Framer.RTU)
+                    vm.updateModbusSettings(
+                        framer = Framer.entries.firstOrNull { it != Framer.TCP && it.label == label } ?: Framer.RTU,
+                    )
                 },
             )
             if (link.connected) {
@@ -427,10 +489,10 @@ fun LinkScreen(
             Text("Quick start", style = MaterialTheme.typography.titleSmall)
             Spacer(Modifier.height(6.dp))
             Text(
-                "1. Select a USB adapter or start the simulator.\n" +
+                "1. Select a USB adapter, enter a TCP host, or start the simulator.\n" +
                     "2. Pick a profile or import a modpoll CSV.\n" +
-                    "3. Set unit id, baud rate and framing.\n" +
-                    "4. Connect, then use Live, Trends, Tools and Log.",
+                    "3. Set unit id, and baud/framing for serial.\n" +
+                    "4. Connect, then use Live, Graphs, Tools and Log.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

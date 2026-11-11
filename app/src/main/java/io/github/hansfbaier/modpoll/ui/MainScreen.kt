@@ -116,7 +116,7 @@ fun ModPollRoot(vm: AppViewModel) {
                     connected = link.connected,
                     polling = link.polling,
                     connecting = link.connecting,
-                    framer = settings.framer,
+                    framer = if (link.kind == TransportKind.TCP) Framer.TCP else settings.framer,
                     profileMenu = profileMenu,
                     onProfileMenu = { profileMenu = it },
                     profiles = profiles,
@@ -209,7 +209,7 @@ fun ModPollRoot(vm: AppViewModel) {
     if (showAbout) {
         AlertDialog(
             onDismissRequest = { showAbout = false },
-            title = { Text("ModPoll Mobile 1.3.0") },
+            title = { Text("ModPoll Mobile 1.4.0") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
