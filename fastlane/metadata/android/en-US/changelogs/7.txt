@@ -1,0 +1,4 @@
+- Google Play free build with a single banner ad
+- Google Play Pro build, paid and ad-free
+- F-Droid build remains ad-free and accepts donations
+- No interstitial or rewarded-video ads

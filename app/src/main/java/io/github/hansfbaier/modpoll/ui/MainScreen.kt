@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.outlined.Construction
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.ShowChart
@@ -43,6 +44,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,15 +54,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.github.hansfbaier.modpoll.BuildConfig
 import io.github.hansfbaier.modpoll.data.Framer
+import io.github.hansfbaier.modpoll.ui.components.BannerAdSlot
+import io.github.hansfbaier.modpoll.ui.components.DonationPrompt
 import io.github.hansfbaier.modpoll.ui.components.Led
 import io.github.hansfbaier.modpoll.ui.components.MonoText
+import io.github.hansfbaier.modpoll.ui.components.UpgradePrompt
+import io.github.hansfbaier.modpoll.ui.components.openUrl
 import io.github.hansfbaier.modpoll.ui.screens.ConsoleScreen
 import io.github.hansfbaier.modpoll.ui.screens.GraphsScreen
 import io.github.hansfbaier.modpoll.ui.screens.LinkScreen
@@ -89,6 +97,17 @@ fun ModPollRoot(vm: AppViewModel) {
     var showAbout by remember { mutableStateOf(false) }
     var profileMenu by remember { mutableStateOf(false) }
     var overflowMenu by remember { mutableStateOf(false) }
+    var showUpgrade by remember { mutableStateOf(false) }
+    var showDonate by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val promptStore = remember(context) { SupportPromptStore(context) }
+
+    LaunchedEffect(promptStore) {
+        if (BuildConfig.IS_PLAY_FREE && promptStore.shouldShowUpgradePrompt()) {
+            showUpgrade = true
+            promptStore.markUpgradePromptShown()
+        }
+    }
 
     val link by vm.link.collectAsStateWithLifecycle()
     val profile by vm.activeProfile.collectAsStateWithLifecycle()
@@ -143,17 +162,24 @@ fun ModPollRoot(vm: AppViewModel) {
                         overflowMenu = false
                         showProfiles = true
                     },
+                    onDonate = {
+                        overflowMenu = false
+                        showDonate = true
+                    },
                 )
             },
             bottomBar = {
-                NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
-                    HomeTab.entries.forEach { entry ->
-                        NavigationBarItem(
-                            selected = tab == entry,
-                            onClick = { tab = entry },
-                            icon = { Icon(entry.icon, contentDescription = entry.label) },
-                            label = { Text(entry.label) },
-                        )
+                Column {
+                    BannerAdSlot(Modifier.fillMaxWidth())
+                    NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
+                        HomeTab.entries.forEach { entry ->
+                            NavigationBarItem(
+                                selected = tab == entry,
+                                onClick = { tab = entry },
+                                icon = { Icon(entry.icon, contentDescription = entry.label) },
+                                label = { Text(entry.label) },
+                            )
+                        }
                     }
                 }
             },
@@ -209,16 +235,17 @@ fun ModPollRoot(vm: AppViewModel) {
     if (showAbout) {
         AlertDialog(
             onDismissRequest = { showAbout = false },
-            title = { Text("ModPoll Mobile 1.4.0") },
+            title = { Text("ModPoll Mobile ${BuildConfig.VERSION_NAME}") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
-                        "Modbus RTU/ASCII master for USB serial adapters. Modelled on the modpoll configuration format, without MQTT.",
+                        "Modbus RTU/ASCII/TCP master for USB serial adapters and TCP sockets. Modelled on the modpoll configuration format, without MQTT.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                     HorizontalDivider(Modifier.padding(vertical = 4.dp))
                     MonoText("RTU: binary + CRC16", size = 10)
                     MonoText("ASCII: hex + LRC + CRLF", size = 10)
+                    MonoText("TCP: MBAP + transaction ids", size = 10)
                     MonoText("FC01 / 02 / 03 / 04 reads", size = 10)
                     MonoText("FC05 / 06 / 15 / 16 writes", size = 10)
                     MonoText("Types: bool, int/uint 16/32/64, float16/32/64, stringN", size = 10)
@@ -227,10 +254,49 @@ fun ModPollRoot(vm: AppViewModel) {
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    Text(
+                        "Privacy policy",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.clickable { openUrl(context, BuildConfig.PRIVACY_URL) },
+                    )
+                    if (BuildConfig.IS_FOSS) {
+                        Text(
+                            "This F-Droid build is free and contains no advertising.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        TextButton(
+                            onClick = {
+                                showAbout = false
+                                showDonate = true
+                            },
+                        ) {
+                            Text("Support development")
+                        }
+                    }
+                    if (BuildConfig.IS_PLAY_FREE && BuildConfig.SHOW_FDROID_PROMO) {
+                        TextButton(
+                            onClick = {
+                                openUrl(context, BuildConfig.FDROID_URL)
+                                showAbout = false
+                            },
+                        ) {
+                            Text("Get it free on F-Droid")
+                        }
+                    }
                 }
             },
             confirmButton = { TextButton(onClick = { showAbout = false }) { Text("Close") } },
         )
+    }
+
+    if (showUpgrade) {
+        UpgradePrompt(onDismiss = { showUpgrade = false })
+    }
+
+    if (showDonate) {
+        DonationPrompt(onDismiss = { showDonate = false })
     }
 }
 
@@ -253,6 +319,7 @@ private fun AppBar(
     onExportSnapshot: () -> Unit,
     onAbout: () -> Unit,
     onOpenProfiles: () -> Unit,
+    onDonate: () -> Unit,
 ) {
     Surface(color = MaterialTheme.colorScheme.background) {
         Column(Modifier.statusBarsPadding()) {
@@ -369,6 +436,15 @@ private fun AppBar(
                             onClick = onAbout,
                             leadingIcon = { Icon(Icons.Outlined.Info, null, Modifier.size(18.dp)) },
                         )
+                        if (BuildConfig.IS_FOSS) {
+                            DropdownMenuItem(
+                                text = { Text("Support development") },
+                                onClick = onDonate,
+                                leadingIcon = {
+                                    Icon(Icons.Outlined.FavoriteBorder, null, Modifier.size(18.dp))
+                                },
+                            )
+                        }
                     }
                 }
             }

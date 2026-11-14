@@ -28,3 +28,6 @@ TCP uses the standard INTERNET permission and connects only to the host you ente
 The app does not collect telemetry.
 
 ModPoll Mobile is free software under the GNU General Public License v3.0 or later.
+
+
+The F-Droid build is ad-free, contains no Google Play services, and supports the project through optional Liberapay donations.

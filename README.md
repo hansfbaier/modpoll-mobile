@@ -9,6 +9,22 @@ No MQTT, no gateway mode, no cloud dependency. The link is a USB cable or a TCP 
 
 ![Live monitor](docs/screenshots/01-live-monitor.png)
 
+## Distribution builds
+
+| Build | Flavor | Package | Ads | Support |
+|---|---|---|---|---|
+| F-Droid | `foss` | `io.github.hansfbaier.modpoll` | None | Optional Liberapay donation |
+| Google Play free | `play` | `io.github.hansfbaier.modpoll` | One banner ad | Pro purchase or free F-Droid link |
+| Google Play Pro | `pro` | `io.github.hansfbaier.modpoll.pro` | None | Paid app |
+
+The F-Droid build does not contain Google Mobile Ads, UMP, or Google Play
+services. The Play free build has banner ads only; it has no interstitial or
+rewarded-video ads. Its upgrade prompt appears after the third launch and at
+most once every seven days.
+
+See [PLAY_STORE.md](PLAY_STORE.md) for store setup, AdMob IDs and release
+commands, and [PRIVACY.md](PRIVACY.md) for the privacy policy.
+
 ## What it does
 
 ### Serial link
@@ -102,14 +118,19 @@ Requirements:
 # point Gradle at your SDK
 echo "sdk.dir=$HOME/android-sdk" > local.properties
 
-./gradlew :app:assembleDebug
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+# Pick a flavor: foss (F-Droid), play (ads), or pro (paid)
+./gradlew :app:assembleFossDebug
+adb install -r app/build/outputs/apk/foss/debug/app-foss-debug.apk
 ```
+
+Build the other variants with `:app:assemblePlayDebug` and
+`:app:assembleProDebug`. Release builds and Play bundles are described in
+[PLAY_STORE.md](PLAY_STORE.md).
 
 Unit tests (CRC, framing, endianness, codecs, CSV, simulator integration):
 
 ```bash
-./gradlew :app:testDebugUnitTest
+./gradlew :app:testFossDebugUnitTest
 ```
 
 ## Using Modbus TCP
@@ -119,8 +140,9 @@ Unit tests (CRC, framing, endianness, codecs, CSV, simulator integration):
 3. Enter the host/IP and port (default 502), then **Connect TCP**.
 4. The active profile's unit id, groups and signals are polled over MBAP framing.
 
-The app requests the standard `INTERNET` permission for TCP sockets. It has no telemetry and no
-cloud service. TCP traffic is not encrypted; use it on a trusted control network or a VPN.
+The app requests the standard `INTERNET` permission for TCP sockets. The app itself has no
+telemetry and no cloud service; the Google Play free build additionally contains AdMob for its
+banner ad. TCP traffic is not encrypted; use it on a trusted control network or a VPN.
 
 ## Using a USB-RS485 adapter
 
@@ -200,6 +222,8 @@ full text.
 
 Third-party components keep their own licenses, notably the MIT-licensed
 [usb-serial-for-android](https://github.com/mik3y/usb-serial-for-android) driver library.
+The Google Play free build also includes the proprietary Google Mobile Ads SDK;
+it is absent from the F-Droid and Pro builds.
 
 ## Credits
 
